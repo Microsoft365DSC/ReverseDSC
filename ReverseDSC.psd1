@@ -6,7 +6,7 @@
 # Generated on: 2026/01/19
 #
 @{
-    ModuleVersion     = '2.0.0.31'
+    ModuleVersion     = '2.0.0.32'
     GUID              = '6c1176a0-4fac-4134-8ca2-3fa8a21a7b90'
     Author            = 'Microsoft Corporation'
     CompanyName       = 'Microsoft Corporation'
@@ -40,15 +40,15 @@
             Tags         = @('DesiredStateConfiguration', 'DSC', 'DSCResourceKit', 'DSCResource', 'ReverseDSC')
 
             # A URL to the license for this module.
-            LicenseUri   = 'https://github.com/microsoft/ReverseDSC/blob/master/LICENSE'
+            LicenseUri   = 'https://github.com/Microsoft365DSC/ReverseDSC/blob/master/LICENSE'
 
             # A URL to the main website for this project.
-            ProjectUri   = 'https://github.com/microsoft/ReverseDSC'
+            ProjectUri   = 'https://github.com/Microsoft365DSC/ReverseDSC'
 
             # A URL to an icon representing this module.
-            IconUri      = 'https://github.com/microsoft/ReverseDSC/blob/master/Images/DSCModuleIcon.png?raw=true'
+            IconUri      = 'https://github.com/Microsoft365DSC/ReverseDSC/blob/master/Images/DSCModuleIcon.png?raw=true'
 
-            ReleaseNotes = 'Add european localized quotation marks.'
+            ReleaseNotes = '* Refactored code to improve maintainability.'
 
         } # End of PSData hashtable
 
