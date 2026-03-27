@@ -1,0 +1,37 @@
+name: Publish to PowerShell Gallery
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  PublishToGallery:
+    runs-on: windows-latest
+
+    # Only when run from the main repo
+    if: github.repository == 'Microsoft365DSC/ReverseDSC'
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Prepare ReverseDSC Module for Publishing
+        shell: pwsh
+        run: |
+          # Copy the ReverseDSC module to the root of the repository for publishing
+          New-Item -Path "./ReverseDSC" -ItemType Directory -Force
+          Copy-Item -Path "./ReverseDSC.psd1" -Destination "./ReverseDSC" -Force
+          Copy-Item -Path "./ReverseDSC.Core.psm1" -Destination "./ReverseDSC" -Force
+
+      - name: Validate Module Manifest
+        shell: pwsh
+        run: |
+          Test-ModuleManifest -Path ./ReverseDSC/ReverseDSC.psd1
+
+      - name: Publish
+        shell: pwsh
+        env:
+          PUBLIC_NUGETAPIKEY: ${{ secrets.NUGETAPIKEY }}
+        run: |
+          Publish-Module -Path "./ReverseDSC/" -NugetAPIKey $env:PUBLIC_NUGETAPIKEY
