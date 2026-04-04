@@ -210,6 +210,11 @@ Describe 'ConvertTo-DSCStringArrayValue' {
             $result = ConvertTo-DSCStringArrayValue -Value @('Item1')
             $result | Should -Be '@("Item1")'
         }
+
+        It 'Should return @() for array with null element' {
+            $result = ConvertTo-DSCStringArrayValue -Value @( $null )
+            $result | Should -Be '@()'
+        }
     }
 
     Context 'When the value is a multi-element array' {
@@ -250,6 +255,11 @@ Describe 'ConvertTo-DSCIntegerArrayValue' {
             $result = ConvertTo-DSCIntegerArrayValue -Value @(42)
             $result | Should -Be '@(42)'
         }
+
+        It 'Should return @() for array with null element' {
+            $result = ConvertTo-DSCStringArrayValue -Value @( $null )
+            $result | Should -Be '@()'
+        }
     }
 }
 
@@ -270,6 +280,11 @@ Describe 'ConvertTo-DSCObjectArrayValue' {
         It 'Should format string elements with quotes' {
             $result = ConvertTo-DSCObjectArrayValue -Value @('A', 'B', 'C')
             $result | Should -Be '@("A","B","C")'
+        }
+
+        It 'Should return @() for array with null element' {
+            $result = ConvertTo-DSCStringArrayValue -Value @( $null )
+            $result | Should -Be '@()'
         }
     }
 
@@ -295,7 +310,7 @@ Describe 'ConvertTo-DSCObjectArrayValue' {
                 @{ Items = @('A', 'B') }
             )
             $result = ConvertTo-DSCObjectArrayValue -Value $value
-            $result | Should -Match "@\("
+            $result | Should -Be "@(@{Items=@('A', 'B')})"
         }
     }
 
@@ -672,7 +687,8 @@ function Set-TargetResource
                 Enabled = $true
             }
             $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            $result | Should -Match '\$True'
+            $result | Should -Match '= \$True;'
+            $result | Should -Match '= "Test";'
         }
     }
 
@@ -683,9 +699,8 @@ function Set-TargetResource
                 Items = @('Item1', 'Item2')
             }
             $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            $result | Should -Match '@\('
-            $result | Should -Match 'Item1'
-            $result | Should -Match 'Item2'
+            $result | Should -Match '@\("Item1","Item2"\);'
+            $result | Should -Match '= "Test";'
         }
     }
 
@@ -744,8 +759,8 @@ function Set-TargetResource
                 Items = @{ SubKey = 'SubValue' }
             }
             $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            $result | Should -Match '@\{'
-            $result | Should -Match 'SubKey'
+            $result | Should -Match '@\{SubKey = "SubValue"; \}'
+            $result | Should -Match '= "Test";'
         }
     }
 }
