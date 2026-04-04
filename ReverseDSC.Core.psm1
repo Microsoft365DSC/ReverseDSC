@@ -616,15 +616,7 @@ function Get-DSCBlock
             }
             '^(Object\[\]|Microsoft\.Management\.Infrastructure\.CimInstance\[\])$'
             {
-                if ($paramType -ne "Microsoft.Management.Infrastructure.CimInstance[]" -and
-                    $paramValue.Length -gt 0 -and $null -ne $paramValue[0] -and $paramValue[0].GetType().Name -eq "String")
-                {
-                    $value = ConvertTo-DSCStringArrayValue -Value $paramValue -NoEscape $isNoEscape -AllowVariables $AllowVariablesInStrings
-                }
-                else
-                {
-                    $value = ConvertTo-DSCObjectArrayValue -Value $paramValue -NoEscape $isNoEscape -AllowVariables $AllowVariablesInStrings
-                }
+                $value = ConvertTo-DSCObjectArrayValue -Value $paramValue -NoEscape $isNoEscape -AllowVariables $AllowVariablesInStrings
             }
             '^CimInstance$'
             {
