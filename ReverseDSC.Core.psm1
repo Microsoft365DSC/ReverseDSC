@@ -322,6 +322,11 @@ function ConvertTo-DSCStringArrayValue
         return "@()"
     }
 
+    if ($Value.Count -eq 1 -and $null -eq $Value[0])
+    {
+        return "@()"
+    }
+
     $result = "@("
     foreach ($item in $Value)
     {
@@ -369,6 +374,11 @@ function ConvertTo-DSCIntegerArrayValue
         return "@()"
     }
 
+    if ($Value.Count -eq 1 -and $null -eq $Value[0])
+    {
+        return "@()"
+    }
+
     return "@($($Value -join ','))"
 }
 
@@ -404,6 +414,11 @@ function ConvertTo-DSCObjectArrayValue
     )
 
     if ($null -eq $Value -or $Value.Count -eq 0)
+    {
+        return "@()"
+    }
+
+    if ($Value.Count -eq 1 -and $null -eq $Value[0])
     {
         return "@()"
     }
@@ -602,9 +617,9 @@ function Get-DSCBlock
             '^(Object\[\]|Microsoft\.Management\.Infrastructure\.CimInstance\[\])$'
             {
                 if ($paramType -ne "Microsoft.Management.Infrastructure.CimInstance[]" -and
-                    $paramValue.Length -gt 0 -and $paramValue[0].GetType().Name -eq "String")
+                    $paramValue.Length -gt 0 -and $null -ne $paramValue[0] -and $paramValue[0].GetType().Name -eq "String")
                 {
-                    $value = ConvertTo-DSCObjectArrayValue -Value $paramValue -NoEscape $isNoEscape -AllowVariables $AllowVariablesInStrings
+                    $value = ConvertTo-DSCStringArrayValue -Value $paramValue -NoEscape $isNoEscape -AllowVariables $AllowVariablesInStrings
                 }
                 else
                 {
