@@ -798,6 +798,397 @@ Describe 'Module Exports' {
     }
 }
 
+Describe 'Get-ModuleAst' {
+    BeforeAll {
+        $astModulePath = Join-Path -Path $TestDrive -ChildPath 'AstTestModule.psm1'
+        @'
+function Get-TargetResource
+{
+    param(
+        [System.String]
+        $Name
+    )
+}
+'@ | Set-Content -Path $astModulePath
+    }
+
+    It 'Should parse the module file into a ScriptBlockAst' {
+        $ast = Get-ModuleAst -ModulePath $astModulePath
+        $ast | Should -BeOfType [System.Management.Automation.Language.ScriptBlockAst]
+    }
+
+    It 'Should cache the parsed AST by module path' {
+        $ast1 = Get-ModuleAst -ModulePath $astModulePath
+        $ast2 = Get-ModuleAst -ModulePath $astModulePath
+        $ast1 | Should -Be $ast2
+        $Script:ModuleAstCache.ContainsKey($astModulePath) | Should -BeTrue
+    }
+}
+
+Describe 'Get-DSCParamType' {
+    BeforeAll {
+        $typeModulePath = Join-Path -Path $TestDrive -ChildPath 'ParamTypeModule.psm1'
+        @'
+function Set-TargetResource
+{
+    param(
+        [System.String] $SystemStringParam,
+        [string] $StringParam,
+        [System.Boolean] $BooleanParam,
+        [boolean] $LowerBooleanParam,
+        [System.String[]] $StringArrayParam,
+        [string[]] $LowerStringArrayParam,
+        [Microsoft.Management.Infrastructure.CimInstance] $CimParam,
+        [Microsoft.Management.Infrastructure.CimInstance[]] $CimArrayParam
+    )
+}
+'@ | Set-Content -Path $typeModulePath
+    }
+
+    It 'Should return System.String for a System.String parameter' {
+        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$SystemStringParam'
+        $result | Should -Be 'System.String'
+    }
+
+    It 'Should map the short string type to System.String' {
+        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$StringParam'
+        $result | Should -Be 'System.String'
+    }
+
+    It 'Should return System.Boolean for a System.Boolean parameter' {
+        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$BooleanParam'
+        $result | Should -Be 'System.Boolean'
+    }
+
+    It 'Should map the short boolean type to System.Boolean' {
+        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$LowerBooleanParam'
+        $result | Should -Be 'System.Boolean'
+    }
+
+    It 'Should return System.String[] for a System.String[] parameter' {
+        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$StringArrayParam'
+        $result | Should -Be 'System.String[]'
+    }
+
+    It 'Should map the short string[] type to System.String[]' {
+        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$LowerStringArrayParam'
+        $result | Should -Be 'System.String[]'
+    }
+
+    It 'Should map a CimInstance parameter to a Hashtable' {
+        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$CimParam'
+        $result | Should -Be 'System.Collections.Hashtable'
+    }
+
+    It 'Should return the mapped type for a CimInstance[] parameter' {
+        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$CimArrayParam'
+        $result | Should -Be 'Microsoft.Management.Infrastructure.CimInstance[]'
+    }
+
+    It 'Should return nothing when the parameter does not exist' {
+        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$NonExistent'
+        $result | Should -BeNullOrEmpty
+    }
+
+    It 'Should return nothing when the module has no Set-TargetResource function' {
+        $noSetPath = Join-Path -Path $TestDrive -ChildPath 'NoSetTarget.psm1'
+        @'
+function Get-TargetResource
+{
+    param(
+        [System.String] $Name
+    )
+}
+'@ | Set-Content -Path $noSetPath
+        $result = Get-DSCParamType -ModulePath $noSetPath -ParamName '$Name'
+        $result | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-DSCFakeParameters' {
+    BeforeAll {
+        $fakeModulePath = Join-Path -Path $TestDrive -ChildPath 'FakeParamsModule.psm1'
+        @'
+function Get-TargetResource
+{
+    param(
+        [ValidateSet('One', 'Two', 'Three')]
+        [System.String] $Mode,
+
+        [ValidateRange(5, 10)]
+        [System.UInt32] $Port,
+
+        [System.String] $Name,
+
+        [System.UInt32] $Count,
+
+        [System.Management.Automation.PSCredential] $Credential,
+
+        [System.Boolean] $Enabled,
+
+        [System.String[]] $Tags
+    )
+}
+'@ | Set-Content -Path $fakeModulePath
+    }
+
+    It 'Should use the first value of a ValidateSet attribute' {
+        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
+        $result['Mode'] | Should -Be 'One'
+    }
+
+    It 'Should use the minimum of a ValidateRange attribute' {
+        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
+        $result['Port'] | Should -Be '5'
+    }
+
+    It 'Should use an asterisk for string parameters' {
+        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
+        $result['Name'] | Should -Be '*'
+    }
+
+    It 'Should use 0 for integer parameters' {
+        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
+        $result['Count'] | Should -Be 0
+    }
+
+    It 'Should use null for credential parameters' {
+        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
+        $result.ContainsKey('Credential') | Should -BeTrue
+        $result['Credential'] | Should -BeNullOrEmpty
+    }
+
+    It 'Should use true for boolean parameters' {
+        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
+        $result['Enabled'] | Should -BeTrue
+    }
+
+    It 'Should use placeholder values for string array parameters' {
+        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
+        $result['Tags'] | Should -Be '1 2'
+    }
+
+    It 'Should return an empty hashtable when no Get-TargetResource exists' {
+        $noGetPath = Join-Path -Path $TestDrive -ChildPath 'NoGetTarget.psm1'
+        @'
+function Set-TargetResource
+{
+    param(
+        [System.String] $Name
+    )
+}
+'@ | Set-Content -Path $noGetPath
+        $result = Get-DSCFakeParameters -ModulePath $noGetPath
+        $result.Count | Should -Be 0
+    }
+}
+
+Describe 'Get-DSCBlock - additional value types' {
+    BeforeAll {
+        $extraModulePath = Join-Path -Path $TestDrive -ChildPath 'ExtraTypesModule.psm1'
+        @'
+function Get-TargetResource
+{
+    param(
+        [System.String]
+        $Name
+    )
+}
+function Set-TargetResource
+{
+    param(
+        [System.String]
+        $Name
+    )
+}
+'@ | Set-Content -Path $extraModulePath
+    }
+
+    It 'Should format System.String[] values as a quoted array' {
+        $params = @{
+            Name  = 'Test'
+            Items = [string[]]@('A', 'B')
+        }
+        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
+        $result | Should -Match '@\("A","B"\);'
+    }
+
+    It 'Should format ArrayList values as a quoted array' {
+        $params = @{
+            Name  = 'Test'
+            Items = [System.Collections.ArrayList]@('A', 'B')
+        }
+        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
+        $result | Should -Match '@\("A","B"\);'
+    }
+
+    It 'Should format integer arrays as a bare integer array' {
+        $params = @{
+            Name  = 'Test'
+            Ports = [int[]]@(80, 443)
+        }
+        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
+        $result | Should -Match '@\(80,443\);'
+    }
+
+    It 'Should format enum values as a quoted string' {
+        $params = @{
+            Name  = 'Test'
+            Color = [System.ConsoleColor]::Red
+        }
+        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
+        $result | Should -Match '= "Red";'
+    }
+
+    It 'Should format non-string, non-enum values as a bare value' {
+        $params = @{
+            Name = 'Test'
+            Port = 8080
+        }
+        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
+        $result | Should -Match '= 8080;'
+    }
+
+    It 'Should handle parameter names longer than 20 characters' {
+        $params = @{
+            ThisParameterNameIsLongerThanTwentyCharacters = 'Test'
+        }
+        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
+        $result | Should -Match 'ThisParameterNameIsLongerThanTwentyCharacters = "Test";'
+    }
+}
+
+Describe 'Convert-DSCStringParamToVariable - additional scenarios' {
+    Context 'When the DSC block has no terminating line breaks' {
+        It 'Should remove quotes from the parameter value' {
+            $dscBlock = '            ParamName            = "SomeValue"'
+            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
+            $result | Should -Be '            ParamName            = SomeValue'
+        }
+    }
+
+    Context 'When converting a CIM array parameter' {
+        It 'Should remove quotes from values inside the CIM array' {
+            $dscBlock = "            Members = @(`r`n                @{`r`n                    Name = `"x`"`r`n                },`r`n                @{`r`n                    Name = `"y`"`r`n                }`r`n            );`r`n"
+            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Members' -IsCIMArray $true
+            $result | Should -Match 'Name = x'
+            $result | Should -Not -Match 'Name = "x"'
+        }
+    }
+
+    Context 'When converting a CIM object parameter' {
+        It 'Should remove quotes from the escaped XML content' {
+            $dscBlock = '            Content = "<xml version=""1.0""><test>""escaped""</test></xml>";' + "`r`n"
+            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Content' -IsCIMObject $true
+            $result | Should -Match 'Content = <xml version=1.0><test>escaped</test></xml>;'
+        }
+    }
+
+    Context 'When the value of another parameter appears after the target parameter' {
+        It 'Should only modify the target parameter value' {
+            $dscBlock = "            ParamName = `"Value`";`r`n            Other = `"X`";`r`n"
+            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
+            $result | Should -Match 'ParamName = Value;'
+            $result | Should -Match 'Other = "X";'
+        }
+    }
+}
+
+Describe 'ConvertTo-DSCObjectArrayValue - additional scenarios' {
+    It 'Should return @() for an array with a single null element' {
+        $result = ConvertTo-DSCObjectArrayValue -Value @( $null )
+        $result | Should -Be '@()'
+    }
+
+    It 'Should not escape values when NoEscape is specified' {
+        $result = ConvertTo-DSCObjectArrayValue -Value @('a', 'b') -NoEscape $true
+        $result | Should -Be '@(ab)'
+    }
+
+    It 'Should remove a trailing comma in NoEscape mode' {
+        $result = ConvertTo-DSCObjectArrayValue -Value @('abc,') -NoEscape $true
+        $result | Should -Be '@(abc)'
+    }
+
+    It 'Should concatenate non-string, non-hashtable elements' {
+        $result = ConvertTo-DSCObjectArrayValue -Value @(1, 2)
+        $result | Should -Be '@(12)'
+    }
+}
+
+Describe 'ConvertTo-DSCIntegerArrayValue - additional scenarios' {
+    It 'Should return @() for an array with a single null element' {
+        $result = ConvertTo-DSCIntegerArrayValue -Value @( $null )
+        $result | Should -Be '@()'
+    }
+}
+
+Describe 'Get-ConfigurationDataContent - additional scenarios' {
+    BeforeEach {
+        Clear-ConfigurationDataContent
+    }
+
+    Context 'When node values start with @( or a variable prefix' {
+        It 'Should emit array and variable values unquoted' {
+            Add-ConfigurationDataEntry -Node 'node1' -Key 'Feat' -Value '@("a","b")'
+            Add-ConfigurationDataEntry -Node 'node1' -Key 'Var' -Value '$data'
+            $result = Get-ConfigurationDataContent
+            $result | Should -Match 'Feat = @\("a","b"\)'
+            $result | Should -Match 'Var = \$data'
+        }
+    }
+
+    Context 'When node values are object arrays' {
+        It 'Should emit the array via ConvertTo-ConfigurationDataString' {
+            Add-ConfigurationDataEntry -Node 'node1' -Key 'Arr' -Value @('x', 'y')
+            $result = Get-ConfigurationDataContent
+            $result | Should -Match '"x";'
+            $result | Should -Match '"y";'
+        }
+    }
+
+    Context 'When NonNodeData entries are present' {
+        It 'Should include the NonNodeData section with string values' {
+            Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Thumbprint' -Value 'abc123' -Description 'cert thumbprint'
+            $result = Get-ConfigurationDataContent
+            $result | Should -Match '# cert thumbprint'
+            $result | Should -Match 'Thumbprint = "abc123"'
+        }
+
+        It 'Should emit object arrays in NonNodeData as quoted arrays' {
+            Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Servers' -Value @('s1', 's2')
+            $result = Get-ConfigurationDataContent
+            $result | Should -Match '@\("s1","s2"\)'
+        }
+
+        It 'Should emit array strings in NonNodeData unquoted' {
+            Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'RawList' -Value '@("a","b")'
+            $result = Get-ConfigurationDataContent
+            $result | Should -Match 'RawList = @\("a","b"\)'
+        }
+
+        It 'Should emit a warning when a NonNodeData value cannot be converted' {
+            Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Bad' -Value 'x'
+            $Script:ConfigurationDataContent['NonNodeData'].Entries['Bad'].Value = $null
+            { $null = Get-ConfigurationDataContent -WarningAction SilentlyContinue } | Should -Not -Throw
+        }
+    }
+}
+
+Describe 'ConvertTo-ConfigurationDataString - nested structures' {
+    It 'Should format an array containing a hashtable' {
+        $result = ConvertTo-ConfigurationDataString @(@{ A = 'B' })
+        $result | Should -Match '@\('
+        $result | Should -Match 'A = "B";'
+    }
+
+    It 'Should format a nested array' {
+        $result = ConvertTo-ConfigurationDataString @(@('x', 'y'))
+        $result | Should -Match '"x";'
+        $result | Should -Match '"y";'
+    }
+}
+
 } # InModuleScope
 
 # Cleanup
