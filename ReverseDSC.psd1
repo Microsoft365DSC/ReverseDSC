@@ -6,7 +6,7 @@
 # Generated on: 2026/08/07
 #
 @{
-    ModuleVersion     = '2.0.0.35'
+    ModuleVersion     = '2.0.0.36'
     GUID              = '6c1176a0-4fac-4134-8ca2-3fa8a21a7b90'
     Author            = 'Microsoft Corporation'
     CompanyName       = 'Microsoft Corporation'
@@ -48,7 +48,12 @@
             # A URL to an icon representing this module.
             IconUri      = 'https://github.com/Microsoft365DSC/ReverseDSC/blob/master/Images/DSCModuleIcon.png?raw=true'
 
-            ReleaseNotes = '* Refactored with performance improvements and bug fixes.'
+            ReleaseNotes = '* Fixed PSCredential values being emitted as their type name instead of the $Creds variable.
+* Fixed Convert-DSCStringParamToVariable throwing when a value has no closing quote.
+* Fixed empty comment lines in the generated ConfigurationData document.
+* CIM instances and arrays of CIM instances are now rendered as MOF style blocks instead of their class name.
+* Get-ConfigurationDataEntry now searches all nodes when no node is specified, as documented.
+* Removed unreachable code paths.'
 
         } # End of PSData hashtable
 

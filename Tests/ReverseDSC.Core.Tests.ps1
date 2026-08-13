@@ -1,636 +1,889 @@
-# Import module before tests
 $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\ReverseDSC.Core.psm1'
 Import-Module -Name $modulePath -Force
 
+BeforeAll {
+    function New-TestCimInstance
+    {
+        param(
+            [Parameter(Mandatory = $true)]
+            [System.String]
+            $ClassName,
+
+            [Parameter(Mandatory = $true)]
+            [System.Collections.Specialized.OrderedDictionary]
+            $Properties
+        )
+
+        $instance = [Microsoft.Management.Infrastructure.CimInstance]::new($ClassName, 'root/microsoft/windows/desiredstateconfiguration')
+        foreach ($name in $Properties.Keys)
+        {
+            $property = [Microsoft.Management.Infrastructure.CimProperty]::Create(
+                $name,
+                $Properties[$name],
+                [Microsoft.Management.Infrastructure.CimFlags]::Property)
+            $instance.CimInstanceProperties.Add($property)
+        }
+        return $instance
+    }
+}
+
 InModuleScope 'ReverseDSC.Core' {
     Describe 'ConvertTo-EscapedDSCString' {
-    Context 'When the input string is null or empty' {
-        It 'Should return the same empty string' {
-            $result = ConvertTo-EscapedDSCString -InputString ''
+        Context 'When the input string is null or empty' {
+            It 'Should return the same empty string' {
+                $result = ConvertTo-EscapedDSCString -InputString ''
+                $result | Should -BeNullOrEmpty
+            }
+
+            It 'Should return null when passed null' {
+                $result = ConvertTo-EscapedDSCString -InputString $null
+                $result | Should -BeNullOrEmpty
+            }
+        }
+
+        Context 'When the input string contains backticks' {
+            It 'Should escape backticks by doubling them' {
+                $result = ConvertTo-EscapedDSCString -InputString 'Hello`World'
+                $result | Should -Be 'Hello``World'
+            }
+        }
+
+        Context 'When the input string contains dollar signs' {
+            It 'Should escape dollar signs by default' {
+                $result = ConvertTo-EscapedDSCString -InputString 'Price is $100'
+                $result | Should -Be 'Price is `$100'
+            }
+
+            It 'Should preserve dollar signs when AllowVariables is specified' {
+                $result = ConvertTo-EscapedDSCString -InputString 'Value is $var' -AllowVariables
+                $result | Should -Be 'Value is $var'
+            }
+        }
+
+        Context 'When the input string contains European quotation marks' {
+            It 'Should escape U+201E (double low-9 quotation mark)' {
+                $input201E = "test$([char]0x201E)value"
+                $result = ConvertTo-EscapedDSCString -InputString $input201E
+                $result | Should -Be "test``$([char]0x201E)value"
+            }
+
+            It 'Should escape U+201C (left double quotation mark)' {
+                $input201C = "test$([char]0x201C)value"
+                $result = ConvertTo-EscapedDSCString -InputString $input201C
+                $result | Should -Be "test``$([char]0x201C)value"
+            }
+
+            It 'Should escape U+201D (right double quotation mark)' {
+                $input201D = "test$([char]0x201D)value"
+                $result = ConvertTo-EscapedDSCString -InputString $input201D
+                $result | Should -Be "test``$([char]0x201D)value"
+            }
+        }
+
+        Context 'When the input string contains double quotes' {
+            It 'Should escape double quotes' {
+                $result = ConvertTo-EscapedDSCString -InputString 'She said "hello"'
+                $result | Should -Be 'She said `"hello`"'
+            }
+        }
+
+        Context 'When the input string contains double quotes and escape characters' {
+            It 'Should escape double quotes and escape characters' {
+                $result = ConvertTo-EscapedDSCString -InputString 'She said "hello" with `"Escaped Text`"'
+                $result | Should -Be 'She said `"hello`" with ```"Escaped Text```"'
+            }
+        }
+
+        Context 'When the input string is plain text without special characters' {
+            It 'Should return the string unchanged' {
+                $result = ConvertTo-EscapedDSCString -InputString 'Normal text'
+                $result | Should -Be 'Normal text'
+            }
+        }
+
+        Context 'When the escaped string is evaluated by PowerShell again' {
+            It 'Should evaluate back to the original value' -ForEach @(
+                @{ Original = 'Plain text' }
+                @{ Original = 'She said "hello"' }
+                @{ Original = 'Price is $100' }
+                @{ Original = 'Path with ` backtick' }
+                @{ Original = "German $([char]0x201E)quotes$([char]0x201C)" }
+            ) {
+                $escaped = ConvertTo-EscapedDSCString -InputString $Original
+                $roundTripped = & ([scriptblock]::Create("`"$escaped`""))
+                $roundTripped | Should -Be $Original
+            }
+        }
+    }
+
+    Describe 'ConvertTo-DSCStringValue' {
+        Context 'When the value is null' {
+            It 'Should return empty double-quoted string' {
+                $result = ConvertTo-DSCStringValue -Value $null
+                $result | Should -Be '""'
+            }
+        }
+
+        Context 'When NoEscape is true' {
+            It 'Should return the raw value without escaping' {
+                $result = ConvertTo-DSCStringValue -Value 'MyValue' -NoEscape $true
+                $result | Should -Be 'MyValue'
+            }
+        }
+
+        Context 'When NoEscape is false (default)' {
+            It 'Should return the value wrapped in double quotes' {
+                $result = ConvertTo-DSCStringValue -Value 'SimpleString'
+                $result | Should -Be '"SimpleString"'
+            }
+
+            It 'Should escape special characters in the value' {
+                $result = ConvertTo-DSCStringValue -Value 'Value with $var'
+                $result | Should -Be '"Value with `$var"'
+            }
+        }
+
+        Context 'When AllowVariables is true' {
+            It 'Should preserve dollar signs in the value' {
+                $result = ConvertTo-DSCStringValue -Value 'Value with $var' -AllowVariables $true
+                $result | Should -Be '"Value with $var"'
+            }
+        }
+    }
+
+    Describe 'ConvertTo-DSCBooleanValue' {
+        It 'Should return $True for true values' {
+            $result = ConvertTo-DSCBooleanValue -Value $true
+            $result | Should -Be '$True'
+        }
+
+        It 'Should return $False for false values' {
+            $result = ConvertTo-DSCBooleanValue -Value $false
+            $result | Should -Be '$False'
+        }
+    }
+
+    Describe 'Format-CredentialVariableName' {
+        It 'Should build the credential variable name for <UserName>' -ForEach @(
+            @{ UserName = 'admin'; Expected = '$Credsadmin' }
+            @{ UserName = 'admin-user'; Expected = '$Credsadmin_user' }
+            @{ UserName = 'admin.user'; Expected = '$Credsadmin_user' }
+            @{ UserName = 'admin user'; Expected = '$Credsadminuser' }
+            @{ UserName = 'admin@contoso.com'; Expected = '$Credsadmincontoso_com' }
+        ) {
+            Format-CredentialVariableName -UserName $UserName | Should -Be $Expected
+        }
+    }
+
+    Describe 'ConvertTo-DSCCredentialValue' {
+        Context 'When the value is null' {
+            It 'Should return a Get-Credential command with the parameter name' {
+                $result = ConvertTo-DSCCredentialValue -Value $null -ParameterName 'Credential'
+                $result | Should -Be 'Get-Credential -Message Credential'
+            }
+        }
+
+        Context 'When the value is a PSCredential with a UPN username' {
+            BeforeAll {
+                $securePassword = ConvertTo-SecureString -String 'Password123' -AsPlainText -Force
+                $credential = New-Object System.Management.Automation.PSCredential ('admin@contoso.com', $securePassword)
+            }
+
+            It 'Should return a $Creds variable based on the username part' {
+                $result = ConvertTo-DSCCredentialValue -Value $credential -ParameterName 'Credential'
+                $result | Should -Be '$Credsadmin'
+            }
+        }
+
+        Context 'When the value is a PSCredential with a domain\user username' {
+            BeforeAll {
+                $securePassword = ConvertTo-SecureString -String 'Password123' -AsPlainText -Force
+                $credential = New-Object System.Management.Automation.PSCredential ('CONTOSO\admin', $securePassword)
+            }
+
+            It 'Should return a $Creds variable based on the username after backslash' {
+                $result = ConvertTo-DSCCredentialValue -Value $credential -ParameterName 'Credential'
+                $result | Should -Be '$Credsadmin'
+            }
+        }
+
+        Context 'When the value is a PSCredential without a domain' {
+            BeforeAll {
+                $securePassword = ConvertTo-SecureString -String 'Password123' -AsPlainText -Force
+                $credential = New-Object System.Management.Automation.PSCredential ('localadmin', $securePassword)
+            }
+
+            It 'Should return a $Creds variable based on the plain username' {
+                $result = ConvertTo-DSCCredentialValue -Value $credential -ParameterName 'Credential'
+                $result | Should -Be '$Credslocaladmin'
+            }
+        }
+
+        Context 'When the value is a PSCredential with special characters in username' {
+            BeforeAll {
+                $securePassword = ConvertTo-SecureString -String 'Password123' -AsPlainText -Force
+                $credential = New-Object System.Management.Automation.PSCredential ('CONTOSO\admin-user.name', $securePassword)
+            }
+
+            It 'Should sanitize special characters in the variable name' {
+                $result = ConvertTo-DSCCredentialValue -Value $credential -ParameterName 'Credential'
+                $result | Should -Be '$Credsadmin_user_name'
+            }
+        }
+    }
+
+    Describe 'ConvertTo-DSCHashtableValue' {
+        It 'Should format a single-entry hashtable correctly' {
+            $hashtable = @{ Key1 = 'Value1' }
+            $result = ConvertTo-DSCHashtableValue -Value $hashtable
+            $result | Should -BeLike '@{*Key1 = "Value1"*}'
+        }
+
+        It 'Should format a multi-entry hashtable correctly' {
+            $hashtable = [ordered]@{ Key1 = 'Value1'; Key2 = 'Value2' }
+            $result = ConvertTo-DSCHashtableValue -Value $hashtable
+            $result | Should -BeLike '@{Key1*Key2*}'
+            $result | Should -Match 'Key1 = "Value1"'
+            $result | Should -Match 'Key2 = "Value2"'
+        }
+
+        It 'Should wrap the result in @{ }' {
+            $hashtable = @{ A = 'B' }
+            $result = ConvertTo-DSCHashtableValue -Value $hashtable
+            $result | Should -Match '^@\{'
+            $result | Should -Match '\}$'
+        }
+    }
+
+    Describe 'ConvertTo-DSCStringArrayValue' {
+        Context 'When the value is null or empty' {
+            It 'Should return @() for null value' {
+                $result = ConvertTo-DSCStringArrayValue -Value $null
+                $result | Should -Be '@()'
+            }
+
+            It 'Should return @() for empty array' {
+                $result = ConvertTo-DSCStringArrayValue -Value @()
+                $result | Should -Be '@()'
+            }
+        }
+
+        Context 'When the value is a single-element array' {
+            It 'Should return a properly formatted array string' {
+                $result = ConvertTo-DSCStringArrayValue -Value @('Item1')
+                $result | Should -Be '@("Item1")'
+            }
+
+            It 'Should return @() for array with null element' {
+                $result = ConvertTo-DSCStringArrayValue -Value @( $null )
+                $result | Should -Be '@()'
+            }
+        }
+
+        Context 'When the value is a multi-element array' {
+            It 'Should return a comma-separated array string' {
+                $result = ConvertTo-DSCStringArrayValue -Value @('Item1', 'Item2', 'Item3')
+                $result | Should -Be '@("Item1","Item2","Item3")'
+            }
+
+            It 'Should skip null elements in between values' {
+                $result = ConvertTo-DSCStringArrayValue -Value @('Item1', $null, 'Item3')
+                $result | Should -Be '@("Item1","Item3")'
+            }
+        }
+
+        Context 'When elements contain characters that need escaping' {
+            It 'Should escape the elements by default' {
+                $result = ConvertTo-DSCStringArrayValue -Value @('$var1', 'He said "hi"')
+                $result | Should -Be '@("`$var1","He said `"hi`"")'
+            }
+
+            It 'Should not escape special characters when NoEscape is true' {
+                $result = ConvertTo-DSCStringArrayValue -Value @('$var1', '$var2') -NoEscape $true
+                $result | Should -Be '@("$var1","$var2")'
+            }
+
+            It 'Should keep variables intact when AllowVariables is true' {
+                $result = ConvertTo-DSCStringArrayValue -Value @('$var1') -AllowVariables $true
+                $result | Should -Be '@("$var1")'
+            }
+        }
+    }
+
+    Describe 'ConvertTo-DSCIntegerArrayValue' {
+        Context 'When the value is null or empty' {
+            It 'Should return @() for null value' {
+                $result = ConvertTo-DSCIntegerArrayValue -Value $null
+                $result | Should -Be '@()'
+            }
+
+            It 'Should return @() for empty array' {
+                $result = ConvertTo-DSCIntegerArrayValue -Value @()
+                $result | Should -Be '@()'
+            }
+
+            It 'Should return @() for an array with a single null element' {
+                $result = ConvertTo-DSCIntegerArrayValue -Value @( $null )
+                $result | Should -Be '@()'
+            }
+        }
+
+        Context 'When the value contains integers' {
+            It 'Should return a comma-separated integer array' {
+                $result = ConvertTo-DSCIntegerArrayValue -Value @(1, 2, 3)
+                $result | Should -Be '@(1,2,3)'
+            }
+
+            It 'Should handle a single integer' {
+                $result = ConvertTo-DSCIntegerArrayValue -Value @(42)
+                $result | Should -Be '@(42)'
+            }
+        }
+    }
+
+    Describe 'ConvertTo-DSCObjectArrayValue' {
+        Context 'When the value is null or empty' {
+            It 'Should return @() for null value' {
+                $result = ConvertTo-DSCObjectArrayValue -Value $null
+                $result | Should -Be '@()'
+            }
+
+            It 'Should return @() for empty array' {
+                $result = ConvertTo-DSCObjectArrayValue -Value @()
+                $result | Should -Be '@()'
+            }
+
+            It 'Should return @() for an array with a single null element' {
+                $result = ConvertTo-DSCObjectArrayValue -Value @( $null )
+                $result | Should -Be '@()'
+            }
+        }
+
+        Context 'When the value contains strings' {
+            It 'Should format string elements with quotes' {
+                $result = ConvertTo-DSCObjectArrayValue -Value @('A', 'B', 'C')
+                $result | Should -Be '@("A","B","C")'
+            }
+
+            It 'Should escape string elements by default' {
+                $result = ConvertTo-DSCObjectArrayValue -Value @('$var')
+                $result | Should -Be '@("`$var")'
+            }
+
+            It 'Should keep variables intact when AllowVariables is true' {
+                $result = ConvertTo-DSCObjectArrayValue -Value @('$var') -AllowVariables $true
+                $result | Should -Be '@("$var")'
+            }
+
+            It 'Should concatenate the elements verbatim when NoEscape is true' {
+                $result = ConvertTo-DSCObjectArrayValue -Value @('a', 'b') -NoEscape $true
+                $result | Should -Be '@(ab)'
+            }
+
+            It 'Should remove a trailing comma when NoEscape is true' {
+                $result = ConvertTo-DSCObjectArrayValue -Value @('abc,') -NoEscape $true
+                $result | Should -Be '@(abc)'
+            }
+        }
+
+        Context 'When the value contains hashtables' {
+            It 'Should format each hashtable in the array' {
+                $value = @(
+                    @{ Name = 'Item1' }
+                )
+                $result = ConvertTo-DSCObjectArrayValue -Value $value
+                $result | Should -Be "@(@{Name='Item1'})"
+            }
+
+            It 'Should format null values in hashtable entries as $null' {
+                $value = @(
+                    @{ Name = $null }
+                )
+                $result = ConvertTo-DSCObjectArrayValue -Value $value
+                $result | Should -Be '@(@{Name=$null})'
+            }
+
+            It 'Should format array values in hashtable entries as quoted arrays' {
+                $value = @(
+                    @{ Items = @('A', 'B') }
+                )
+                $result = ConvertTo-DSCObjectArrayValue -Value $value
+                $result | Should -Be "@(@{Items=@('A', 'B')})"
+            }
+
+            It 'Should concatenate multiple hashtables without a separator' {
+                $value = @(
+                    @{ Name = 'Item1' }
+                    @{ Name = 'Item2' }
+                )
+                $result = ConvertTo-DSCObjectArrayValue -Value $value
+                $result | Should -Be "@(@{Name='Item1'}@{Name='Item2'})"
+            }
+        }
+
+        Context 'When the value contains neither strings nor hashtables' {
+            It 'Should concatenate the elements' {
+                $result = ConvertTo-DSCObjectArrayValue -Value @(1, 2)
+                $result | Should -Be '@(12)'
+            }
+        }
+    }
+
+    Describe 'Get-DSCDependsOnBlock' {
+        It 'Should generate a proper DependsOn clause for a single dependency' {
+            $result = Get-DSCDependsOnBlock -DependsOnItems @('[xWebsite]DefaultSite')
+            $result | Should -Be '@("[xWebsite]DefaultSite");'
+        }
+
+        It 'Should generate a proper DependsOn clause for multiple dependencies' {
+            $result = Get-DSCDependsOnBlock -DependsOnItems @('[xWebsite]DefaultSite', '[xSPSite]MainSite')
+            $result | Should -Be '@("[xWebsite]DefaultSite","[xSPSite]MainSite");'
+        }
+    }
+
+    Describe 'Credential repository' {
+        BeforeEach {
+            $Script:CredsRepo = @()
+        }
+
+        It 'Should report an unknown user as not stored' {
+            Test-Credentials -UserName 'CONTOSO\admin' | Should -BeFalse
+            Get-Credentials -UserName 'CONTOSO\admin' | Should -BeNullOrEmpty
+        }
+
+        It 'Should store a username in lowercase and report it as stored' {
+            Save-Credentials -UserName 'CONTOSO\ADMIN'
+            Test-Credentials -UserName 'CONTOSO\admin' | Should -BeTrue
+            Get-Credentials -UserName 'CONTOSO\Admin' | Should -Be 'contoso\admin'
+        }
+
+        It 'Should not store the same username twice regardless of casing' {
+            Save-Credentials -UserName 'CONTOSO\admin'
+            Save-Credentials -UserName 'contoso\ADMIN'
+            $Script:CredsRepo | Should -HaveCount 1
+        }
+
+        It 'Should keep separate entries for different users' {
+            Save-Credentials -UserName 'CONTOSO\admin'
+            Save-Credentials -UserName 'CONTOSO\reader'
+            $Script:CredsRepo | Should -HaveCount 2
+        }
+    }
+
+    Describe 'Resolve-Credentials' {
+        It 'Should resolve <UserName> to <Expected>' -ForEach @(
+            @{ UserName = 'CONTOSO\admin'; Expected = '$Credsadmin' }
+            @{ UserName = 'CONTOSO\admin-user'; Expected = '$Credsadmin_user' }
+            @{ UserName = 'CONTOSO\admin.user'; Expected = '$Credsadmin_user' }
+            @{ UserName = 'admin @company'; Expected = '$Credsadmincompany' }
+            @{ UserName = 'admin'; Expected = '$Credsadmin' }
+            @{ UserName = 'ADMIN@CONTOSO.COM'; Expected = '$CredsADMINCONTOSO_COM' }
+        ) {
+            Resolve-Credentials -UserName $UserName | Should -Be $Expected
+        }
+    }
+
+    Describe 'Required user list' {
+        BeforeEach {
+            Clear-ReverseDSCUserNames
+        }
+
+        It 'Should return nothing when no user was encountered' {
+            Get-ReverseDSCUserNames | Should -BeNullOrEmpty
+        }
+
+        It 'Should return every user that was encountered once' {
+            Add-ReverseDSCUserName -UserName 'user1@contoso.com'
+            Add-ReverseDSCUserName -UserName 'user2@contoso.com'
+            Add-ReverseDSCUserName -UserName 'user1@contoso.com'
+
+            $result = Get-ReverseDSCUserNames
+            $result | Should -HaveCount 2
+            $result | Should -Contain 'user1@contoso.com'
+            $result | Should -Contain 'user2@contoso.com'
+        }
+
+        It 'Should empty the list when cleared' {
+            Add-ReverseDSCUserName -UserName 'user1@contoso.com'
+            Clear-ReverseDSCUserNames
+            Get-ReverseDSCUserNames | Should -BeNullOrEmpty
+        }
+    }
+
+    Describe 'Add-ConfigurationDataEntry' {
+        BeforeEach {
+            Clear-ConfigurationDataContent
+        }
+
+        It 'Should add an entry under a new node' {
+            Add-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1' -Value 'Value1'
+            $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1'
+            $result.Value | Should -Be 'Value1'
+        }
+
+        It 'Should add an entry with a description' {
+            Add-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1' -Value 'Value1' -Description 'Test setting'
+            $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1'
+            $result.Value | Should -Be 'Value1'
+            $result.Description | Should -Be 'Test setting'
+        }
+
+        It 'Should update the value when adding the same key to the same node' {
+            Add-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1' -Value 'Value1'
+            Add-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1' -Value 'Value2'
+            $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1'
+            $result.Value | Should -Be 'Value2'
+        }
+
+        It 'Should support multiple nodes' {
+            Add-ConfigurationDataEntry -Node 'Server1' -Key 'Key1' -Value 'A'
+            Add-ConfigurationDataEntry -Node 'Server2' -Key 'Key1' -Value 'B'
+            (Get-ConfigurationDataEntry -Node 'Server1' -Key 'Key1').Value | Should -Be 'A'
+            (Get-ConfigurationDataEntry -Node 'Server2' -Key 'Key1').Value | Should -Be 'B'
+        }
+    }
+
+    Describe 'Get-ConfigurationDataEntry' {
+        BeforeEach {
+            Clear-ConfigurationDataContent
+            Add-ConfigurationDataEntry -Node 'localhost' -Key 'TestKey' -Value 'TestValue'
+            Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Thumbprint' -Value 'abc123'
+        }
+
+        Context 'When the node is specified' {
+            It 'Should return the entry for a specific node and key' {
+                $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'TestKey'
+                $result | Should -Not -BeNullOrEmpty
+                $result.Value | Should -Be 'TestValue'
+            }
+
+            It 'Should return null when the key does not exist' {
+                Get-ConfigurationDataEntry -Node 'localhost' -Key 'NonExistent' | Should -BeNullOrEmpty
+            }
+
+            It 'Should return null when the node does not exist' {
+                Get-ConfigurationDataEntry -Node 'UnknownNode' -Key 'TestKey' | Should -BeNullOrEmpty
+            }
+
+            It 'Should not return an entry that only exists under another node' {
+                Get-ConfigurationDataEntry -Node 'localhost' -Key 'Thumbprint' | Should -BeNullOrEmpty
+            }
+        }
+
+        Context 'When the node is omitted' {
+            It 'Should search every node and return the match' {
+                (Get-ConfigurationDataEntry -Key 'TestKey').Value | Should -Be 'TestValue'
+            }
+
+            It 'Should also find entries stored under NonNodeData' {
+                (Get-ConfigurationDataEntry -Key 'Thumbprint').Value | Should -Be 'abc123'
+            }
+
+            It 'Should return null when no node holds the key' {
+                Get-ConfigurationDataEntry -Key 'NonExistent' | Should -BeNullOrEmpty
+            }
+
+            It 'Should treat an empty node name the same as an omitted one' {
+                (Get-ConfigurationDataEntry -Node '' -Key 'Thumbprint').Value | Should -Be 'abc123'
+            }
+        }
+    }
+
+    Describe 'Clear-ConfigurationDataContent' {
+        It 'Should clear all configuration data entries' {
+            Add-ConfigurationDataEntry -Node 'localhost' -Key 'TestKey' -Value 'TestValue'
+            Clear-ConfigurationDataContent
+            $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'TestKey'
             $result | Should -BeNullOrEmpty
         }
+    }
 
-        It 'Should return null when passed null' {
-            $result = ConvertTo-EscapedDSCString -InputString $null
-            $result | Should -BeNullOrEmpty
+    Describe 'Get-ConfigurationDataContent' {
+        BeforeEach {
+            Clear-ConfigurationDataContent
+        }
+
+        Context 'When a node has a documented entry' {
+            BeforeEach {
+                Add-ConfigurationDataEntry -Node 'localhost' -Key 'ServerName' -Value 'MyServer' -Description 'The server name'
+            }
+
+            It 'Should wrap the content in a hashtable with an AllNodes and a NonNodeData section' {
+                $result = Get-ConfigurationDataContent
+                $result | Should -Match '^@\{'
+                $result | Should -Match 'AllNodes'
+                $result | Should -Match 'NonNodeData'
+                $result | Should -Match '\}$'
+            }
+
+            It 'Should include the node name and the DSC credential settings' {
+                $result = Get-ConfigurationDataContent
+                $result | Should -Match 'NodeName\s+= "localhost"'
+                $result | Should -Match 'PSDscAllowPlainTextPassword = \$true;'
+                $result | Should -Match 'PSDscAllowDomainUser        = \$true;'
+            }
+
+            It 'Should include the key, value and description' {
+                $result = Get-ConfigurationDataContent
+                $result | Should -Match '# The server name'
+                $result | Should -Match 'ServerName = "MyServer"'
+            }
+        }
+
+        Context 'When node values start with @( or a variable prefix' {
+            It 'Should emit array and variable values unquoted' {
+                Add-ConfigurationDataEntry -Node 'node1' -Key 'Feat' -Value '@("a","b")'
+                Add-ConfigurationDataEntry -Node 'node1' -Key 'Var' -Value '$data'
+                $result = Get-ConfigurationDataContent
+                $result | Should -Match 'Feat = @\("a","b"\)'
+                $result | Should -Match 'Var = \$data'
+            }
+        }
+
+        Context 'When node values are object arrays' {
+            It 'Should emit the array via ConvertTo-ConfigurationDataString' {
+                Add-ConfigurationDataEntry -Node 'node1' -Key 'Arr' -Value @('x', 'y')
+                $result = Get-ConfigurationDataContent
+                $result | Should -Match '"x";'
+                $result | Should -Match '"y";'
+            }
+        }
+
+        Context 'When entries have no description' {
+            It 'Should not emit an empty comment line' {
+                Add-ConfigurationDataEntry -Node 'localhost' -Key 'Undocumented' -Value 'Value'
+                Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'AlsoUndocumented' -Value 'Value'
+                $result = Get-ConfigurationDataContent
+                ($result -split "`r`n" | Where-Object { $_.Trim() -eq '#' }) | Should -BeNullOrEmpty
+            }
+        }
+
+        Context 'When multiple nodes are present' {
+            It 'Should separate the nodes with a comma and not leave a trailing one' {
+                Add-ConfigurationDataEntry -Node 'Server1' -Key 'Key1' -Value 'A'
+                Add-ConfigurationDataEntry -Node 'Server2' -Key 'Key1' -Value 'B'
+                $result = Get-ConfigurationDataContent
+                ([regex]::Matches($result, '\},\r\n')) | Should -HaveCount 1
+                $result | Should -Not -Match '\},\r\n    \)'
+            }
+        }
+
+        Context 'When NonNodeData entries are present' {
+            It 'Should include the NonNodeData section with string values' {
+                Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Thumbprint' -Value 'abc123' -Description 'cert thumbprint'
+                $result = Get-ConfigurationDataContent
+                $result | Should -Match '# cert thumbprint'
+                $result | Should -Match 'Thumbprint = "abc123"'
+            }
+
+            It 'Should emit object arrays in NonNodeData as quoted arrays' {
+                Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Servers' -Value @('s1', 's2')
+                $result = Get-ConfigurationDataContent
+                $result | Should -Match '@\("s1","s2"\)'
+            }
+
+            It 'Should emit array strings in NonNodeData unquoted' {
+                Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'RawList' -Value '@("a","b")'
+                $result = Get-ConfigurationDataContent
+                $result | Should -Match 'RawList = @\("a","b"\)'
+            }
+
+            It 'Should warn and skip the entry when a NonNodeData value cannot be converted' {
+                Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Bad' -Value 'x'
+                $Script:ConfigurationDataContent['NonNodeData'].Entries['Bad'].Value = $null
+
+                $result = Get-ConfigurationDataContent -WarningVariable warnings -WarningAction SilentlyContinue
+
+                $warnings | Should -Match 'Could not obtain value for key Bad'
+                $result | Should -Not -Match 'Bad ='
+            }
         }
     }
 
-    Context 'When the input string contains backticks' {
-        It 'Should escape backticks by doubling them' {
-            $result = ConvertTo-EscapedDSCString -InputString 'Hello`World'
-            $result | Should -Be 'Hello``World'
+    Describe 'ConvertTo-ConfigurationDataString' {
+        Context 'When converting a string object' {
+            It 'Should wrap the string in quotes with a semicolon' {
+                $result = ConvertTo-ConfigurationDataString -PSObject 'TestValue'
+                $result | Should -Be "`"TestValue`";`r`n"
+            }
+        }
+
+        Context 'When converting an array of strings' {
+            It 'Should format as a PowerShell array block' {
+                $result = ConvertTo-ConfigurationDataString -PSObject @('Item1', 'Item2')
+                $result | Should -Match '@\('
+                $result | Should -Match '"Item1";'
+                $result | Should -Match '"Item2";'
+                $result | Should -Match '\)\r\n$'
+            }
+        }
+
+        Context 'When converting a hashtable' {
+            It 'Should format as a PowerShell hashtable block' {
+                $result = ConvertTo-ConfigurationDataString -PSObject @{ Name = 'Test' }
+                $result | Should -Match '@\{'
+                $result | Should -Match 'Name = "Test";'
+                $result | Should -Match '\},\r\n$'
+            }
+        }
+
+        Context 'When converting nested structures' {
+            It 'Should format an array containing a hashtable' {
+                $result = ConvertTo-ConfigurationDataString -PSObject @(@{ A = 'B' })
+                $result | Should -Match '@\('
+                $result | Should -Match 'A = "B";'
+            }
+
+            It 'Should format a nested array' {
+                $result = ConvertTo-ConfigurationDataString -PSObject @(, @('x', 'y'))
+                $result | Should -Match '"x";'
+                $result | Should -Match '"y";'
+            }
+        }
+
+        Context 'When converting an unsupported type' {
+            It 'Should return an empty string' {
+                $result = ConvertTo-ConfigurationDataString -PSObject 42
+                $result | Should -BeNullOrEmpty
+            }
         }
     }
 
-    Context 'When the input string contains dollar signs' {
-        It 'Should escape dollar signs by default' {
-            $result = ConvertTo-EscapedDSCString -InputString 'Price is $100'
-            $result | Should -Be 'Price is `$100'
+    Describe 'Convert-DSCStringParamToVariable' {
+        Context 'When converting a simple string parameter to a variable' {
+            It 'Should remove the quotes around the parameter value' {
+                $dscBlock = "            ParamName            = `"SomeValue`";`r`n"
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
+                $result | Should -Be "            ParamName            = SomeValue;`r`n"
+            }
         }
 
-        It 'Should preserve dollar signs when AllowVariables is specified' {
-            $result = ConvertTo-EscapedDSCString -InputString 'Value is $var' -AllowVariables
-            $result | Should -Be 'Value is $var'
+        Context 'When the DSC block has no terminating line break' {
+            It 'Should remove the quotes around the parameter value' {
+                $dscBlock = '            ParamName            = "SomeValue"'
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
+                $result | Should -Be '            ParamName            = SomeValue'
+            }
+        }
+
+        Context 'When the parameter name is not found' {
+            It 'Should return the original DSCBlock unchanged' {
+                $dscBlock = "            OtherParam           = `"Value`";`r`n"
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'NonExistent'
+                $result | Should -Be $dscBlock
+            }
+        }
+
+        Context 'When other parameters follow the target parameter' {
+            It 'Should only unquote the target parameter value' {
+                $dscBlock = "            ParamName = `"Value`";`r`n            Other = `"X`";`r`n"
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
+                $result | Should -Be "            ParamName = Value;`r`n            Other = `"X`";`r`n"
+            }
+        }
+
+        Context 'When the value has no closing quote' {
+            It 'Should return the DSC block unchanged instead of failing' {
+                $dscBlock = "            ParamName            = `"SomeValue;`r`n"
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
+                $result | Should -Be $dscBlock
+            }
+        }
+
+        Context 'When the value is closed by a single quote instead of a double quote' {
+            It 'Should fall back to the single quote as the closing delimiter' {
+                $dscBlock = "            ParamName            = `"SomeValue';`r`n"
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
+                $result | Should -Be "            ParamName            = SomeValue;`r`n"
+            }
+        }
+
+        Context 'When converting a CIM instance array parameter' {
+            BeforeAll {
+                $dscBlock = @(
+                    '            Members              = "@(MSFT_TeamMember{'
+                    '                DisplayName = `"John Doe`"'
+                    '                Role        = `"Owner`"'
+                    '            }'
+                    '            MSFT_TeamMember{'
+                    '                DisplayName = `"Jane Roe`"'
+                    '                Role        = `"Member`"'
+                    '            })";'
+                    ''
+                ) -join "`r`n"
+            }
+
+            It 'Should remove the surrounding quotes and unescape the inner quotes' {
+                $expected = @(
+                    '            Members              = @(MSFT_TeamMember{'
+                    '                DisplayName = "John Doe"'
+                    '                Role        = "Owner"'
+                    '            }'
+                    '            MSFT_TeamMember{'
+                    '                DisplayName = "Jane Roe"'
+                    '                Role        = "Member"'
+                    '            });'
+                    ''
+                ) -join "`r`n"
+
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Members' -IsCIMArray $true
+                $result | Should -Be $expected
+            }
+        }
+
+        Context 'When a CIM instance array uses single quotes and trailing commas' {
+            It 'Should remove the separator lines between the instances' {
+                $dscBlock = @(
+                    "            Members = @(MSFT_TeamMember{"
+                    "                Name = 'x'"
+                    "            },"
+                    "            MSFT_TeamMember{"
+                    "                Name = 'y'"
+                    "            });"
+                    ''
+                ) -join "`r`n"
+
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Members' -IsCIMArray $true
+                $result | Should -Not -Match '\},\r\n'
+                $result | Should -Match "Name = 'x'"
+            }
+        }
+
+        Context 'When the closing parenthesis of a CIM instance array is still quoted' {
+            It 'Should move the closing parenthesis onto its own line' {
+                $dscBlock = @(
+                    '            Members              = "@(MSFT_TeamMember{'
+                    '                DisplayName = `"John Doe'
+                    '            }");'
+                    ''
+                ) -join "`r`n"
+
+                $expected = @(
+                    '            Members              = "@(MSFT_TeamMember{'
+                    '                DisplayName = "John Doe'
+                    '            }'
+                    '            );'
+                    ''
+                ) -join "`r`n"
+
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Members' -IsCIMArray $true
+                $result | Should -Be $expected
+            }
+        }
+
+        Context 'When converting a CIM object parameter that holds escaped XML' {
+            It 'Should remove the surrounding quotes and unescape the attribute quotes' {
+                $dscBlock = '            Content = "<Rule Name=`"Block`" Action=`"Deny`" />";' + "`r`n"
+                $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Content' -IsCIMObject $true
+                $result | Should -Be ('            Content = <Rule Name="Block" Action="Deny" />;' + "`r`n")
+            }
         }
     }
 
-    Context 'When the input string contains European quotation marks' {
-        It 'Should escape U+201E (double low-9 quotation mark)' {
-            $input201E = "test$([char]0x201E)value"
-            $result = ConvertTo-EscapedDSCString -InputString $input201E
-            $result | Should -Be "test``$([char]0x201E)value"
-        }
-
-        It 'Should escape U+201C (left double quotation mark)' {
-            $input201C = "test$([char]0x201C)value"
-            $result = ConvertTo-EscapedDSCString -InputString $input201C
-            $result | Should -Be "test``$([char]0x201C)value"
-        }
-
-        It 'Should escape U+201D (right double quotation mark)' {
-            $input201D = "test$([char]0x201D)value"
-            $result = ConvertTo-EscapedDSCString -InputString $input201D
-            $result | Should -Be "test``$([char]0x201D)value"
-        }
-    }
-
-    Context 'When the input string contains double quotes' {
-        It 'Should escape double quotes' {
-            $result = ConvertTo-EscapedDSCString -InputString 'She said "hello"'
-            $result | Should -Be 'She said `"hello`"'
-        }
-    }
-
-    Context 'When the input string contains double quotes and escape characters' {
-        It 'Should escape double quotes and escape characters' {
-            $result = ConvertTo-EscapedDSCString -InputString 'She said "hello" with `"Escaped Text`"'
-            $result | Should -Be 'She said `"hello`" with ```"Escaped Text```"'
-        }
-    }
-
-    Context 'When the input string is plain text without special characters' {
-        It 'Should return the string unchanged' {
-            $result = ConvertTo-EscapedDSCString -InputString 'Normal text'
-            $result | Should -Be 'Normal text'
-        }
-    }
-}
-
-Describe 'ConvertTo-DSCStringValue' {
-    Context 'When the value is null' {
-        It 'Should return empty double-quoted string' {
-            $result = ConvertTo-DSCStringValue -Value $null
-            $result | Should -Be '""'
-        }
-    }
-
-    Context 'When NoEscape is true' {
-        It 'Should return the raw value without escaping' {
-            $result = ConvertTo-DSCStringValue -Value 'MyValue' -NoEscape $true
-            $result | Should -Be 'MyValue'
-        }
-    }
-
-    Context 'When NoEscape is false (default)' {
-        It 'Should return the value wrapped in double quotes' {
-            $result = ConvertTo-DSCStringValue -Value 'SimpleString'
-            $result | Should -Be '"SimpleString"'
-        }
-
-        It 'Should escape special characters in the value' {
-            $result = ConvertTo-DSCStringValue -Value 'Value with $var'
-            $result | Should -Be '"Value with `$var"'
-        }
-    }
-
-    Context 'When AllowVariables is true' {
-        It 'Should preserve dollar signs in the value' {
-            $result = ConvertTo-DSCStringValue -Value 'Value with $var' -AllowVariables $true
-            $result | Should -Be '"Value with $var"'
-        }
-    }
-}
-
-Describe 'ConvertTo-DSCBooleanValue' {
-    It 'Should return $True for true values' {
-        $result = ConvertTo-DSCBooleanValue -Value $true
-        $result | Should -Be '$True'
-    }
-
-    It 'Should return $False for false values' {
-        $result = ConvertTo-DSCBooleanValue -Value $false
-        $result | Should -Be '$False'
-    }
-}
-
-Describe 'ConvertTo-DSCCredentialValue' {
-    Context 'When the value is null' {
-        It 'Should return a Get-Credential command with the parameter name' {
-            $result = ConvertTo-DSCCredentialValue -Value $null -ParameterName 'Credential'
-            $result | Should -Be 'Get-Credential -Message Credential'
-        }
-    }
-
-    Context 'When the value is a PSCredential with a UPN username' {
+    Describe 'Get-DSCBlock' {
         BeforeAll {
-            $securePassword = ConvertTo-SecureString -String 'Password123' -AsPlainText -Force
-            $credential = New-Object System.Management.Automation.PSCredential ('admin@contoso.com', $securePassword)
-        }
-
-        It 'Should return a $Creds variable based on the username part' {
-            $result = ConvertTo-DSCCredentialValue -Value $credential -ParameterName 'Credential'
-            $result | Should -Be '$Credsadmin'
-        }
-    }
-
-    Context 'When the value is a PSCredential with a domain\user username' {
-        BeforeAll {
-            $securePassword = ConvertTo-SecureString -String 'Password123' -AsPlainText -Force
-            $credential = New-Object System.Management.Automation.PSCredential ('CONTOSO\admin', $securePassword)
-        }
-
-        It 'Should return a $Creds variable based on the username after backslash' {
-            $result = ConvertTo-DSCCredentialValue -Value $credential -ParameterName 'Credential'
-            $result | Should -Be '$Credsadmin'
-        }
-    }
-
-    Context 'When the value is a PSCredential with special characters in username' {
-        BeforeAll {
-            $securePassword = ConvertTo-SecureString -String 'Password123' -AsPlainText -Force
-            $credential = New-Object System.Management.Automation.PSCredential ('CONTOSO\admin-user.name', $securePassword)
-        }
-
-        It 'Should sanitize special characters in the variable name' {
-            $result = ConvertTo-DSCCredentialValue -Value $credential -ParameterName 'Credential'
-            $result | Should -Be '$Credsadmin_user_name'
-        }
-    }
-}
-
-Describe 'ConvertTo-DSCHashtableValue' {
-    It 'Should format a single-entry hashtable correctly' {
-        $hashtable = @{ Key1 = 'Value1' }
-        $result = ConvertTo-DSCHashtableValue -Value $hashtable
-        $result | Should -BeLike '@{*Key1 = "Value1"*}'
-    }
-
-    It 'Should format a multi-entry hashtable correctly' {
-        $hashtable = [ordered]@{ Key1 = 'Value1'; Key2 = 'Value2' }
-        $result = ConvertTo-DSCHashtableValue -Value $hashtable
-        $result | Should -BeLike '@{Key1*Key2*}'
-        $result | Should -Match 'Key1 = "Value1"'
-        $result | Should -Match 'Key2 = "Value2"'
-    }
-
-    It 'Should wrap the result in @{ }' {
-        $hashtable = @{ A = 'B' }
-        $result = ConvertTo-DSCHashtableValue -Value $hashtable
-        $result | Should -Match '^@\{'
-        $result | Should -Match '\}$'
-    }
-}
-
-Describe 'ConvertTo-DSCStringArrayValue' {
-    Context 'When the value is null or empty' {
-        It 'Should return @() for null value' {
-            $result = ConvertTo-DSCStringArrayValue -Value $null
-            $result | Should -Be '@()'
-        }
-
-        It 'Should return @() for empty array' {
-            $result = ConvertTo-DSCStringArrayValue -Value @()
-            $result | Should -Be '@()'
-        }
-    }
-
-    Context 'When the value is a single-element array' {
-        It 'Should return a properly formatted array string' {
-            $result = ConvertTo-DSCStringArrayValue -Value @('Item1')
-            $result | Should -Be '@("Item1")'
-        }
-
-        It 'Should return @() for array with null element' {
-            $result = ConvertTo-DSCStringArrayValue -Value @( $null )
-            $result | Should -Be '@()'
-        }
-    }
-
-    Context 'When the value is a multi-element array' {
-        It 'Should return a comma-separated array string' {
-            $result = ConvertTo-DSCStringArrayValue -Value @('Item1', 'Item2', 'Item3')
-            $result | Should -Be '@("Item1","Item2","Item3")'
-        }
-    }
-
-    Context 'When NoEscape is true' {
-        It 'Should not escape special characters in array elements' {
-            $result = ConvertTo-DSCStringArrayValue -Value @('$var1', '$var2') -NoEscape $true
-            $result | Should -Be '@("$var1","$var2")'
-        }
-    }
-}
-
-Describe 'ConvertTo-DSCIntegerArrayValue' {
-    Context 'When the value is null or empty' {
-        It 'Should return @() for null value' {
-            $result = ConvertTo-DSCIntegerArrayValue -Value $null
-            $result | Should -Be '@()'
-        }
-
-        It 'Should return @() for empty array' {
-            $result = ConvertTo-DSCIntegerArrayValue -Value @()
-            $result | Should -Be '@()'
-        }
-    }
-
-    Context 'When the value contains integers' {
-        It 'Should return a comma-separated integer array' {
-            $result = ConvertTo-DSCIntegerArrayValue -Value @(1, 2, 3)
-            $result | Should -Be '@(1,2,3)'
-        }
-
-        It 'Should handle a single integer' {
-            $result = ConvertTo-DSCIntegerArrayValue -Value @(42)
-            $result | Should -Be '@(42)'
-        }
-
-        It 'Should return @() for array with null element' {
-            $result = ConvertTo-DSCStringArrayValue -Value @( $null )
-            $result | Should -Be '@()'
-        }
-    }
-}
-
-Describe 'ConvertTo-DSCObjectArrayValue' {
-    Context 'When the value is null or empty' {
-        It 'Should return @() for null value' {
-            $result = ConvertTo-DSCObjectArrayValue -Value $null
-            $result | Should -Be '@()'
-        }
-
-        It 'Should return @() for empty array' {
-            $result = ConvertTo-DSCObjectArrayValue -Value @()
-            $result | Should -Be '@()'
-        }
-    }
-
-    Context 'When the value contains strings' {
-        It 'Should format string elements with quotes' {
-            $result = ConvertTo-DSCObjectArrayValue -Value @('A', 'B', 'C')
-            $result | Should -Be '@("A","B","C")'
-        }
-
-        It 'Should return @() for array with null element' {
-            $result = ConvertTo-DSCStringArrayValue -Value @( $null )
-            $result | Should -Be '@()'
-        }
-    }
-
-    Context 'When the value contains hashtables' {
-        It 'Should format each hashtable in the array' {
-            $value = @(
-                @{ Name = 'Item1' }
-            )
-            $result = ConvertTo-DSCObjectArrayValue -Value $value
-            $result | Should -BeLike '@(@{*Name*Item1*})'
-        }
-
-        It 'Should handle null values in hashtable entries' {
-            $value = @(
-                @{ Name = $null }
-            )
-            $result = ConvertTo-DSCObjectArrayValue -Value $value
-            $result | Should -Match '\$null'
-        }
-
-        It 'Should handle array values in hashtable entries' {
-            $value = @(
-                @{ Items = @('A', 'B') }
-            )
-            $result = ConvertTo-DSCObjectArrayValue -Value $value
-            $result | Should -Be "@(@{Items=@('A', 'B')})"
-        }
-    }
-
-    Context 'When NoEscape is true' {
-        It 'Should not escape string values' {
-            $result = ConvertTo-DSCObjectArrayValue -Value @('$var') -NoEscape $true
-            $result | Should -Match '\$var'
-        }
-    }
-}
-
-Describe 'Get-DSCDependsOnBlock' {
-    It 'Should generate a proper DependsOn clause for a single dependency' {
-        $result = Get-DSCDependsOnBlock -DependsOnItems @('[xWebsite]DefaultSite')
-        $result | Should -Be '@("[xWebsite]DefaultSite");'
-    }
-
-    It 'Should generate a proper DependsOn clause for multiple dependencies' {
-        $result = Get-DSCDependsOnBlock -DependsOnItems @('[xWebsite]DefaultSite', '[xSPSite]MainSite')
-        $result | Should -Be '@("[xWebsite]DefaultSite","[xSPSite]MainSite");'
-    }
-}
-
-Describe 'Save-Credentials' {
-    BeforeEach {
-        # Reset the credentials repo before each test
-        $Script:CredsRepo = @()
-    }
-
-    It 'Should add a new username to the credentials repository' {
-        Save-Credentials -UserName 'CONTOSO\admin'
-        $Script:CredsRepo | Should -Contain 'contoso\admin'
-    }
-
-    It 'Should store usernames in lowercase' {
-        Save-Credentials -UserName 'CONTOSO\ADMIN'
-        $Script:CredsRepo | Should -Contain 'contoso\admin'
-    }
-
-    It 'Should not duplicate usernames' {
-        Save-Credentials -UserName 'CONTOSO\admin'
-        Save-Credentials -UserName 'contoso\admin'
-        $Script:CredsRepo | Should -HaveCount 1
-    }
-}
-
-Describe 'Get-Credentials' {
-    BeforeAll {
-        $Script:CredsRepo = @()
-        Save-Credentials -UserName 'CONTOSO\admin'
-    }
-
-    It 'Should return the username when it exists in the repository' {
-        $result = Get-Credentials -UserName 'CONTOSO\admin'
-        $result | Should -Be 'contoso\admin'
-    }
-
-    It 'Should return null when the username is not in the repository' {
-        $result = Get-Credentials -UserName 'CONTOSO\nonexistent'
-        $result | Should -BeNullOrEmpty
-    }
-}
-
-Describe 'Test-Credentials' {
-    BeforeAll {
-        $Script:CredsRepo = @()
-        Save-Credentials -UserName 'CONTOSO\admin'
-    }
-
-    It 'Should return true when the username exists' {
-        $result = Test-Credentials -UserName 'CONTOSO\admin'
-        $result | Should -BeTrue
-    }
-
-    It 'Should return false when the username does not exist' {
-        $result = Test-Credentials -UserName 'CONTOSO\unknown'
-        $result | Should -BeFalse
-    }
-}
-
-Describe 'Resolve-Credentials' {
-    It 'Should return $Creds<username> for domain\user format' {
-        $result = Resolve-Credentials -UserName 'CONTOSO\admin'
-        $result | Should -Be '$Credsadmin'
-    }
-
-    It 'Should sanitize hyphens to underscores' {
-        $result = Resolve-Credentials -UserName 'CONTOSO\admin-user'
-        $result | Should -Be '$Credsadmin_user'
-    }
-
-    It 'Should sanitize dots to underscores' {
-        $result = Resolve-Credentials -UserName 'CONTOSO\admin.user'
-        $result | Should -Be '$Credsadmin_user'
-    }
-
-    It 'Should remove spaces and @ signs' {
-        $result = Resolve-Credentials -UserName 'admin @company'
-        $result | Should -Be '$Credsadmincompany'
-    }
-
-    It 'Should handle a simple username without domain' {
-        $result = Resolve-Credentials -UserName 'admin'
-        $result | Should -Be '$Credsadmin'
-    }
-}
-
-Describe 'Add-ReverseDSCUserName' {
-    BeforeEach {
-        $Script:AllUsers = @()
-    }
-
-    It 'Should add a username to the list' {
-        Add-ReverseDSCUserName -UserName 'user1@contoso.com'
-        $Script:AllUsers | Should -Contain 'user1@contoso.com'
-    }
-
-    It 'Should not add duplicate usernames' {
-        Add-ReverseDSCUserName -UserName 'user1@contoso.com'
-        Add-ReverseDSCUserName -UserName 'user1@contoso.com'
-        $Script:AllUsers | Should -HaveCount 1
-    }
-}
-
-Describe 'Get-ReverseDSCUserNames' {
-    BeforeAll {
-        $Script:AllUsers = @()
-        Add-ReverseDSCUserName -UserName 'user1@contoso.com'
-        Add-ReverseDSCUserName -UserName 'user2@contoso.com'
-    }
-
-    It 'Should return all added usernames' {
-        $result = Get-ReverseDSCUserNames
-        $result | Should -HaveCount 2
-        $result | Should -Contain 'user1@contoso.com'
-        $result | Should -Contain 'user2@contoso.com'
-    }
-}
-
-Describe 'Clear-ReverseDSCUserNames' {
-    BeforeAll {
-        Add-ReverseDSCUserName -UserName 'user1@contoso.com'
-    }
-
-    It 'Should clear all usernames from the list' {
-        Clear-ReverseDSCUserNames
-        $Script:AllUsers | Should -HaveCount 0
-    }
-}
-
-Describe 'Add-ConfigurationDataEntry' {
-    BeforeEach {
-        Clear-ConfigurationDataContent
-    }
-
-    It 'Should add an entry under a new node' {
-        Add-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1' -Value 'Value1'
-        $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1'
-        $result.Value | Should -Be 'Value1'
-    }
-
-    It 'Should add an entry with a description' {
-        Add-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1' -Value 'Value1' -Description 'Test setting'
-        $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1'
-        $result.Value | Should -Be 'Value1'
-        $result.Description | Should -Be 'Test setting'
-    }
-
-    It 'Should update the value when adding the same key to the same node' {
-        Add-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1' -Value 'Value1'
-        Add-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1' -Value 'Value2'
-        $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'Setting1'
-        $result.Value | Should -Be 'Value2'
-    }
-
-    It 'Should support multiple nodes' {
-        Add-ConfigurationDataEntry -Node 'Server1' -Key 'Key1' -Value 'A'
-        Add-ConfigurationDataEntry -Node 'Server2' -Key 'Key1' -Value 'B'
-        (Get-ConfigurationDataEntry -Node 'Server1' -Key 'Key1').Value | Should -Be 'A'
-        (Get-ConfigurationDataEntry -Node 'Server2' -Key 'Key1').Value | Should -Be 'B'
-    }
-}
-
-Describe 'Get-ConfigurationDataEntry' {
-    BeforeAll {
-        Clear-ConfigurationDataContent
-        Add-ConfigurationDataEntry -Node 'localhost' -Key 'TestKey' -Value 'TestValue'
-    }
-
-    It 'Should return the entry for a specific node and key' {
-        $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'TestKey'
-        $result | Should -Not -BeNullOrEmpty
-        $result.Value | Should -Be 'TestValue'
-    }
-
-    It 'Should return null when the key does not exist' {
-        $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'NonExistent'
-        $result | Should -BeNullOrEmpty
-    }
-}
-
-Describe 'Clear-ConfigurationDataContent' {
-    It 'Should clear all configuration data entries' {
-        Add-ConfigurationDataEntry -Node 'localhost' -Key 'TestKey' -Value 'TestValue'
-        Clear-ConfigurationDataContent
-        $result = Get-ConfigurationDataEntry -Node 'localhost' -Key 'TestKey'
-        $result | Should -BeNullOrEmpty
-    }
-}
-
-Describe 'Get-ConfigurationDataContent' {
-    BeforeAll {
-        Clear-ConfigurationDataContent
-        Add-ConfigurationDataEntry -Node 'localhost' -Key 'ServerName' -Value 'MyServer' -Description 'The server name'
-    }
-
-    It 'Should return a string containing the AllNodes section' {
-        $result = Get-ConfigurationDataContent
-        $result | Should -Match 'AllNodes'
-    }
-
-    It 'Should include the node name' {
-        $result = Get-ConfigurationDataContent
-        $result | Should -Match 'localhost'
-    }
-
-    It 'Should include the key and value' {
-        $result = Get-ConfigurationDataContent
-        $result | Should -Match 'ServerName'
-        $result | Should -Match 'MyServer'
-    }
-
-    It 'Should include the description as a comment' {
-        $result = Get-ConfigurationDataContent
-        $result | Should -Match '# The server name'
-    }
-
-    It 'Should include NonNodeData section' {
-        $result = Get-ConfigurationDataContent
-        $result | Should -Match 'NonNodeData'
-    }
-
-    It 'Should start with @{ and end with }' {
-        $result = Get-ConfigurationDataContent
-        $result | Should -Match '^@\{'
-        $result | Should -Match '\}$'
-    }
-}
-
-Describe 'New-ConfigurationDataDocument' {
-    BeforeAll {
-        Clear-ConfigurationDataContent
-        Add-ConfigurationDataEntry -Node 'localhost' -Key 'TestKey' -Value 'TestValue'
-        $testPath = Join-Path -Path $TestDrive -ChildPath 'TestConfig.psd1'
-    }
-
-    It 'Should create a .psd1 file at the specified path' {
-        New-ConfigurationDataDocument -Path $testPath
-        Test-Path -Path $testPath | Should -BeTrue
-    }
-
-    It 'Should write valid content to the file' {
-        New-ConfigurationDataDocument -Path $testPath
-        $content = Get-Content -Path $testPath -Raw
-        $content | Should -Match 'AllNodes'
-        $content | Should -Match 'TestKey'
-    }
-}
-
-Describe 'ConvertTo-ConfigurationDataString' {
-    Context 'When converting a string object' {
-        It 'Should wrap the string in quotes with a semicolon' {
-            $result = ConvertTo-ConfigurationDataString -PSObject 'TestValue'
-            $result | Should -Match '"TestValue"'
-        }
-    }
-
-    Context 'When converting an array of strings' {
-        It 'Should format as a PowerShell array block' {
-            $result = ConvertTo-ConfigurationDataString -PSObject @('Item1', 'Item2')
-            $result | Should -Match '@\('
-            $result | Should -Match 'Item1'
-            $result | Should -Match 'Item2'
-        }
-    }
-
-    Context 'When converting a hashtable' {
-        It 'Should format as a PowerShell hashtable block' {
-            $hashtable = @{ Name = 'Test' }
-            $result = ConvertTo-ConfigurationDataString -PSObject $hashtable
-            $result | Should -Match '@\{'
-            $result | Should -Match 'Name'
-        }
-    }
-}
-
-Describe 'Convert-DSCStringParamToVariable' {
-    Context 'When converting a simple string parameter to a variable' {
-        It 'Should remove quotes around the parameter value' {
-            $dscBlock = "            ParamName            = `"SomeValue`";`r`n"
-            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
-            $result | Should -Not -Match '"SomeValue"'
-            $result | Should -Match 'SomeValue'
-        }
-    }
-
-    Context 'When the parameter name is not found' {
-        It 'Should return the original DSCBlock unchanged' {
-            $dscBlock = "            OtherParam           = `"Value`";`r`n"
-            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'NonExistent'
-            $result | Should -Be $dscBlock
-        }
-    }
-}
-
-Describe 'Get-DSCBlock' {
-    BeforeAll {
-        # Create a minimal DSC resource module for testing
-        $testModulePath = Join-Path -Path $TestDrive -ChildPath 'TestResource.psm1'
-        $moduleContent = @'
+            $testModulePath = Join-Path -Path $TestDrive -ChildPath 'TestResource.psm1'
+            @'
 function Get-TargetResource
 {
     param(
@@ -664,144 +917,141 @@ function Set-TargetResource
         $Items
     )
 }
-'@
-        Set-Content -Path $testModulePath -Value $moduleContent
-    }
+'@ | Set-Content -Path $testModulePath
+        }
 
-    Context 'When generating a DSC block with string parameters' {
-        It 'Should produce a properly formatted DSC configuration block' {
-            $params = @{
-                Name = 'TestResource'
+        Context 'When generating a DSC block for the supported value types' {
+            It 'Should quote string values' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Name = 'TestResource' }
+                $result | Should -Be "            Name                 = `"TestResource`";`r`n"
             }
-            $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            $result | Should -Not -BeNullOrEmpty
-            $result | Should -Match 'Name'
-            $result | Should -Match 'TestResource'
+
+            It 'Should format boolean values with a $ prefix' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Enabled = $true }
+                $result | Should -Match '= \$True;'
+            }
+
+            It 'Should format string arrays with @()' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Items = @('Item1', 'Item2') }
+                $result | Should -Match '@\("Item1","Item2"\);'
+            }
+
+            It 'Should format an ArrayList as a quoted array' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Items = [System.Collections.ArrayList]@('A', 'B') }
+                $result | Should -Match '@\("A","B"\);'
+            }
+
+            It 'Should format a generic string list as a quoted array' {
+                $list = [System.Collections.Generic.List[System.String]]::new()
+                $list.Add('A')
+                $list.Add('B')
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Items = $list }
+                $result | Should -Match '@\("A","B"\);'
+            }
+
+            It 'Should format integer arrays as a bare integer array' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Ports = [System.Int32[]]@(80, 443) }
+                $result | Should -Match '@\(80,443\);'
+            }
+
+            It 'Should format hashtable values as @{ key = value }' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Items = @{ SubKey = 'SubValue' } }
+                $result | Should -Match '@\{SubKey = "SubValue"; \}'
+            }
+
+            It 'Should format enum values as a quoted string' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Color = [System.ConsoleColor]::Red }
+                $result | Should -Match '= "Red";'
+            }
+
+            It 'Should format numeric values without quotes' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Port = 8080 }
+                $result | Should -Match '= 8080;'
+            }
+
+            It 'Should resolve a credential to its $Creds variable' {
+                $securePassword = ConvertTo-SecureString -String 'Password123' -AsPlainText -Force
+                $credential = New-Object System.Management.Automation.PSCredential ('CONTOSO\svc-admin', $securePassword)
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Credential = $credential }
+                $result | Should -Match '= \$Credssvc_admin;'
+            }
+
+        }
+
+        Context 'When aligning the generated parameters' {
+            It 'Should pad the parameter names to the default width of 20 characters' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Name = 'Test'; Enabled = $true }
+                $result | Should -Match "            Enabled              = "
+                $result | Should -Match "            Name                 = "
+            }
+
+            It 'Should pad the parameter names to the longest name when it exceeds 20 characters' {
+                $params = @{
+                    Name                                          = 'Test'
+                    ThisParameterNameIsLongerThanTwentyCharacters = 'Test'
+                }
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
+                $result | Should -Match 'ThisParameterNameIsLongerThanTwentyCharacters = "Test";'
+                $result | Should -Match 'Name                                          = "Test";'
+            }
+        }
+
+        Context 'When the parameters are sorted' {
+            It 'Should emit the parameters in alphabetical order' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Zeta = 'z'; Alpha = 'a'; Mike = 'm' }
+                $result | Should -Match 'Alpha[\s\S]*Mike[\s\S]*Zeta'
+            }
+        }
+
+        Context 'When _metadata_ properties are present' {
+            It 'Should exclude the _metadata_ key and append its value as a comment' {
+                $params = @{
+                    Name           = 'Test'
+                    _metadata_Name = '# This is a comment'
+                }
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
+                $result | Should -Be "            Name                 = `"Test`"; # This is a comment`r`n"
+            }
+        }
+
+        Context 'When null values are present' {
+            It 'Should exclude the parameters with a null value' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Name = 'Test'; Items = $null }
+                $result | Should -Not -Match 'Items'
+            }
+        }
+
+        Context 'When NoEscape is specified for a parameter' {
+            It 'Should not escape the specified parameter value' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Name = '$ConfigName' } -NoEscape @('Name')
+                $result | Should -Be "            Name                 = `$ConfigName;`r`n"
+            }
+
+            It 'Should still escape the parameters that were not listed' {
+                $params = @{ Name = '$ConfigName'; Other = '$OtherName' }
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params $params -NoEscape @('Name')
+                $result | Should -Match 'Name                 = \$ConfigName;'
+                $result | Should -Match 'Other                = "`\$OtherName";'
+            }
+        }
+
+        Context 'When AllowVariablesInStrings is specified' {
+            It 'Should keep the variable references inside the quoted value' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Name = 'Value of $Node' } -AllowVariablesInStrings
+                $result | Should -Be "            Name                 = `"Value of `$Node`";`r`n"
+            }
+
+            It 'Should keep the variable references inside string arrays' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Items = [System.String[]]@('$Node') } -AllowVariablesInStrings
+                $result | Should -Match '@\("\$Node"\);'
+            }
         }
     }
 
-    Context 'When generating a DSC block with boolean parameters' {
-        It 'Should format boolean values with $ prefix' {
-            $params = @{
-                Name    = 'Test'
-                Enabled = $true
-            }
-            $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            $result | Should -Match '= \$True;'
-            $result | Should -Match '= "Test";'
-        }
-    }
-
-    Context 'When generating a DSC block with string array parameters' {
-        It 'Should format string arrays with @()' {
-            $params = @{
-                Name  = 'Test'
-                Items = @('Item1', 'Item2')
-            }
-            $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            $result | Should -Match '@\("Item1","Item2"\);'
-            $result | Should -Match '= "Test";'
-        }
-    }
-
-    Context 'When parameters are aligned' {
-        It 'Should pad shorter parameter names with spaces for alignment' {
-            $params = @{
-                Name    = 'Test'
-                Enabled = $true
-            }
-            $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            # Both parameters should have equal signs, and shorter names should have more spacing
-            $result | Should -Match 'Name\s+='
-            $result | Should -Match 'Enabled\s+='
-        }
-    }
-
-    Context 'When _metadata_ properties are present' {
-        It 'Should exclude _metadata_ keys from the output but include their values as comments' {
-            $params = @{
-                Name              = 'Test'
-                _metadata_Name    = '# This is a comment'
-            }
-            $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            $result | Should -Not -Match '_metadata_'
-            $result | Should -Match '# This is a comment'
-        }
-    }
-
-    Context 'When null values are present' {
-        It 'Should exclude parameters with null values' {
-            $params = @{
-                Name  = 'Test'
-                Items = $null
-            }
-            $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            # Null params are excluded in the preprocessing step
-            $result | Should -Match 'Name'
-        }
-    }
-
-    Context 'When NoEscape is specified for a parameter' {
-        It 'Should not escape the specified parameter values' {
-            $params = @{
-                Name = '$ConfigName'
-            }
-            $result = Get-DSCBlock -ModulePath $testModulePath -Params $params -NoEscape @('Name')
-            $result | Should -Match '\$ConfigName'
-            $result | Should -Not -Match '`\$ConfigName'
-        }
-    }
-
-    Context 'When hashtable parameters are provided' {
-        It 'Should format hashtable values as @{ key = value }' {
-            $params = @{
-                Name  = 'Test'
-                Items = @{ SubKey = 'SubValue' }
-            }
-            $result = Get-DSCBlock -ModulePath $testModulePath -Params $params
-            $result | Should -Match '@\{SubKey = "SubValue"; \}'
-            $result | Should -Match '= "Test";'
-        }
-    }
-}
-
-Describe 'Module Exports' {
-    BeforeAll {
-        $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\ReverseDSC.psd1'
-        $manifest = Test-ModuleManifest -Path $manifestPath -ErrorAction SilentlyContinue
-    }
-
-    It 'Should have a valid module manifest' {
-        $manifest | Should -Not -BeNullOrEmpty
-    }
-
-    It 'Should export expected functions' -ForEach @(
-        @{ FunctionName = 'ConvertTo-EscapedDSCString' }
-        @{ FunctionName = 'Get-DSCParamType' }
-        @{ FunctionName = 'Get-DSCBlock' }
-        @{ FunctionName = 'Get-DSCFakeParameters' }
-        @{ FunctionName = 'Get-DSCDependsOnBlock' }
-        @{ FunctionName = 'Get-Credentials' }
-        @{ FunctionName = 'Resolve-Credentials' }
-        @{ FunctionName = 'Save-Credentials' }
-        @{ FunctionName = 'Test-Credentials' }
-        @{ FunctionName = 'Convert-DSCStringParamToVariable' }
-        @{ FunctionName = 'Get-ConfigurationDataContent' }
-        @{ FunctionName = 'New-ConfigurationDataDocument' }
-        @{ FunctionName = 'Add-ConfigurationDataEntry' }
-        @{ FunctionName = 'Get-ConfigurationDataEntry' }
-        @{ FunctionName = 'Clear-ConfigurationDataContent' }
-        @{ FunctionName = 'Add-ReverseDSCUserName' }
-    ) {
-        Get-Command -Name $FunctionName -Module 'ReverseDSC.Core' -ErrorAction SilentlyContinue |
-            Should -Not -BeNullOrEmpty
-    }
-}
-
-Describe 'Get-ModuleAst' {
-    BeforeAll {
-        $astModulePath = Join-Path -Path $TestDrive -ChildPath 'AstTestModule.psm1'
-        @'
+    Describe 'Get-ModuleAst' {
+        BeforeAll {
+            $astModulePath = Join-Path -Path $TestDrive -ChildPath 'AstTestModule.psm1'
+            @'
 function Get-TargetResource
 {
     param(
@@ -810,25 +1060,27 @@ function Get-TargetResource
     )
 }
 '@ | Set-Content -Path $astModulePath
+        }
+
+        It 'Should parse the module file into a ScriptBlockAst' {
+            $ast = Get-ModuleAst -ModulePath $astModulePath
+            $ast | Should -BeOfType [System.Management.Automation.Language.ScriptBlockAst]
+        }
+
+        It 'Should return the cached AST on subsequent calls' {
+            $ast1 = Get-ModuleAst -ModulePath $astModulePath
+            Set-Content -Path $astModulePath -Value 'function Get-Something { }'
+            $ast2 = Get-ModuleAst -ModulePath $astModulePath
+
+            $ast2 | Should -Be $ast1
+            $Script:ModuleAstCache.ContainsKey($astModulePath) | Should -BeTrue
+        }
     }
 
-    It 'Should parse the module file into a ScriptBlockAst' {
-        $ast = Get-ModuleAst -ModulePath $astModulePath
-        $ast | Should -BeOfType [System.Management.Automation.Language.ScriptBlockAst]
-    }
-
-    It 'Should cache the parsed AST by module path' {
-        $ast1 = Get-ModuleAst -ModulePath $astModulePath
-        $ast2 = Get-ModuleAst -ModulePath $astModulePath
-        $ast1 | Should -Be $ast2
-        $Script:ModuleAstCache.ContainsKey($astModulePath) | Should -BeTrue
-    }
-}
-
-Describe 'Get-DSCParamType' {
-    BeforeAll {
-        $typeModulePath = Join-Path -Path $TestDrive -ChildPath 'ParamTypeModule.psm1'
-        @'
+    Describe 'Get-DSCParamType' {
+        BeforeAll {
+            $typeModulePath = Join-Path -Path $TestDrive -ChildPath 'ParamTypeModule.psm1'
+            @'
 function Set-TargetResource
 {
     param(
@@ -836,63 +1088,42 @@ function Set-TargetResource
         [string] $StringParam,
         [System.Boolean] $BooleanParam,
         [boolean] $LowerBooleanParam,
+        [bool] $ShortBooleanParam,
         [System.String[]] $StringArrayParam,
         [string[]] $LowerStringArrayParam,
         [Microsoft.Management.Infrastructure.CimInstance] $CimParam,
-        [Microsoft.Management.Infrastructure.CimInstance[]] $CimArrayParam
+        [Microsoft.Management.Infrastructure.CimInstance[]] $CimArrayParam,
+        [ValidateSet('A', 'B')][System.String] $ValidatedParam
     )
 }
 '@ | Set-Content -Path $typeModulePath
-    }
+        }
 
-    It 'Should return System.String for a System.String parameter' {
-        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$SystemStringParam'
-        $result | Should -Be 'System.String'
-    }
+        It 'Should return <Expected> for <ParamName>' -ForEach @(
+            @{ ParamName = '$SystemStringParam'; Expected = 'System.String' }
+            @{ ParamName = '$StringParam'; Expected = 'System.String' }
+            @{ ParamName = '$BooleanParam'; Expected = 'System.Boolean' }
+            @{ ParamName = '$LowerBooleanParam'; Expected = 'System.Boolean' }
+            @{ ParamName = '$ShortBooleanParam'; Expected = 'System.Boolean' }
+            @{ ParamName = '$StringArrayParam'; Expected = 'System.String[]' }
+            @{ ParamName = '$LowerStringArrayParam'; Expected = 'System.String[]' }
+            @{ ParamName = '$CimParam'; Expected = 'System.Collections.Hashtable' }
+            @{ ParamName = '$CimArrayParam'; Expected = 'Microsoft.Management.Infrastructure.CimInstance[]' }
+        ) {
+            Get-DSCParamType -ModulePath $typeModulePath -ParamName $ParamName | Should -Be $Expected
+        }
 
-    It 'Should map the short string type to System.String' {
-        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$StringParam'
-        $result | Should -Be 'System.String'
-    }
+        It 'Should skip attributes that are not a type and return the parameter type' {
+            Get-DSCParamType -ModulePath $typeModulePath -ParamName '$ValidatedParam' | Should -Be 'System.String'
+        }
 
-    It 'Should return System.Boolean for a System.Boolean parameter' {
-        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$BooleanParam'
-        $result | Should -Be 'System.Boolean'
-    }
+        It 'Should return nothing when the parameter does not exist' {
+            Get-DSCParamType -ModulePath $typeModulePath -ParamName '$NonExistent' | Should -BeNullOrEmpty
+        }
 
-    It 'Should map the short boolean type to System.Boolean' {
-        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$LowerBooleanParam'
-        $result | Should -Be 'System.Boolean'
-    }
-
-    It 'Should return System.String[] for a System.String[] parameter' {
-        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$StringArrayParam'
-        $result | Should -Be 'System.String[]'
-    }
-
-    It 'Should map the short string[] type to System.String[]' {
-        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$LowerStringArrayParam'
-        $result | Should -Be 'System.String[]'
-    }
-
-    It 'Should map a CimInstance parameter to a Hashtable' {
-        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$CimParam'
-        $result | Should -Be 'System.Collections.Hashtable'
-    }
-
-    It 'Should return the mapped type for a CimInstance[] parameter' {
-        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$CimArrayParam'
-        $result | Should -Be 'Microsoft.Management.Infrastructure.CimInstance[]'
-    }
-
-    It 'Should return nothing when the parameter does not exist' {
-        $result = Get-DSCParamType -ModulePath $typeModulePath -ParamName '$NonExistent'
-        $result | Should -BeNullOrEmpty
-    }
-
-    It 'Should return nothing when the module has no Set-TargetResource function' {
-        $noSetPath = Join-Path -Path $TestDrive -ChildPath 'NoSetTarget.psm1'
-        @'
+        It 'Should return nothing when the module has no Set-TargetResource function' {
+            $noSetPath = Join-Path -Path $TestDrive -ChildPath 'NoSetTarget.psm1'
+            @'
 function Get-TargetResource
 {
     param(
@@ -900,15 +1131,14 @@ function Get-TargetResource
     )
 }
 '@ | Set-Content -Path $noSetPath
-        $result = Get-DSCParamType -ModulePath $noSetPath -ParamName '$Name'
-        $result | Should -BeNullOrEmpty
+            Get-DSCParamType -ModulePath $noSetPath -ParamName '$Name' | Should -BeNullOrEmpty
+        }
     }
-}
 
-Describe 'Get-DSCFakeParameters' {
-    BeforeAll {
-        $fakeModulePath = Join-Path -Path $TestDrive -ChildPath 'FakeParamsModule.psm1'
-        @'
+    Describe 'Get-DSCFakeParameters' {
+        BeforeAll {
+            $fakeModulePath = Join-Path -Path $TestDrive -ChildPath 'FakeParamsModule.psm1'
+            @'
 function Get-TargetResource
 {
     param(
@@ -926,51 +1156,63 @@ function Get-TargetResource
 
         [System.Boolean] $Enabled,
 
-        [System.String[]] $Tags
+        [System.String[]] $Tags,
+
+        [Microsoft.Management.Infrastructure.CimInstance[]] $Members
+    )
+}
+
+function Set-TargetResource
+{
+    param(
+        [System.String] $Name
     )
 }
 '@ | Set-Content -Path $fakeModulePath
-    }
 
-    It 'Should use the first value of a ValidateSet attribute' {
-        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
-        $result['Mode'] | Should -Be 'One'
-    }
+            $fakeParameters = Get-DSCFakeParameters -ModulePath $fakeModulePath
+        }
 
-    It 'Should use the minimum of a ValidateRange attribute' {
-        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
-        $result['Port'] | Should -Be '5'
-    }
+        It 'Should use the first value of a ValidateSet attribute' {
+            $fakeParameters['Mode'] | Should -Be 'One'
+        }
 
-    It 'Should use an asterisk for string parameters' {
-        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
-        $result['Name'] | Should -Be '*'
-    }
+        It 'Should use the minimum of a ValidateRange attribute' {
+            $fakeParameters['Port'] | Should -Be '5'
+        }
 
-    It 'Should use 0 for integer parameters' {
-        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
-        $result['Count'] | Should -Be 0
-    }
+        It 'Should use an asterisk for string parameters' {
+            $fakeParameters['Name'] | Should -Be '*'
+        }
 
-    It 'Should use null for credential parameters' {
-        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
-        $result.ContainsKey('Credential') | Should -BeTrue
-        $result['Credential'] | Should -BeNullOrEmpty
-    }
+        It 'Should use 0 for integer parameters' {
+            $fakeParameters['Count'] | Should -Be 0
+        }
 
-    It 'Should use true for boolean parameters' {
-        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
-        $result['Enabled'] | Should -BeTrue
-    }
+        It 'Should use null for credential parameters' {
+            $fakeParameters.ContainsKey('Credential') | Should -BeTrue
+            $fakeParameters['Credential'] | Should -BeNullOrEmpty
+        }
 
-    It 'Should use placeholder values for string array parameters' {
-        $result = Get-DSCFakeParameters -ModulePath $fakeModulePath
-        $result['Tags'] | Should -Be '1 2'
-    }
+        It 'Should use true for boolean parameters' {
+            $fakeParameters['Enabled'] | Should -BeTrue
+        }
 
-    It 'Should return an empty hashtable when no Get-TargetResource exists' {
-        $noGetPath = Join-Path -Path $TestDrive -ChildPath 'NoGetTarget.psm1'
-        @'
+        It 'Should use placeholder values for string array parameters' {
+            $fakeParameters['Tags'] | Should -Be '1 2'
+        }
+
+        It 'Should not generate a value for CIM instance array parameters' {
+            $fakeParameters.ContainsKey('Members') | Should -BeFalse
+        }
+
+        It 'Should only look at the Get-TargetResource parameters' {
+            $fakeParameters.Keys | Should -HaveCount 7
+        }
+
+        It 'Should return an empty hashtable when no Get-TargetResource exists' {
+            $noGetPath = Join-Path -Path $TestDrive -ChildPath 'NoGetTarget.psm1'
+            @'
 function Set-TargetResource
 {
     param(
@@ -978,218 +1220,489 @@ function Set-TargetResource
     )
 }
 '@ | Set-Content -Path $noGetPath
-        $result = Get-DSCFakeParameters -ModulePath $noGetPath
-        $result.Count | Should -Be 0
+            (Get-DSCFakeParameters -ModulePath $noGetPath).Count | Should -Be 0
+        }
     }
 }
 
-Describe 'Get-DSCBlock - additional value types' {
+Describe 'Rendering CIM instances' {
     BeforeAll {
-        $extraModulePath = Join-Path -Path $TestDrive -ChildPath 'ExtraTypesModule.psm1'
+        $john = New-TestCimInstance -ClassName 'MSFT_TeamMember' -Properties ([ordered]@{ DisplayName = 'John Doe'; Role = 'Owner' })
+        $jane = New-TestCimInstance -ClassName 'MSFT_TeamMember' -Properties ([ordered]@{ DisplayName = 'Jane Roe'; Role = 'Member' })
+    }
+
+    Context 'When converting a single instance' {
+        It 'Should render a MOF style block with the properties aligned' {
+            $expected = @(
+                'MSFT_TeamMember{'
+                '                DisplayName = "John Doe"'
+                '                Role        = "Owner"'
+                '            }'
+            ) -join "`r`n"
+
+            ConvertTo-DSCCimInstanceValue -Value $john | Should -Be $expected
+        }
+
+        It 'Should render an empty block when the instance has no properties' {
+            $instance = [Microsoft.Management.Infrastructure.CimInstance]::new('MSFT_Empty', 'root/microsoft/windows/desiredstateconfiguration')
+            ConvertTo-DSCCimInstanceValue -Value $instance | Should -Be "MSFT_Empty{`r`n            }"
+        }
+
+        It 'Should skip the properties that have no value' {
+            $instance = [Microsoft.Management.Infrastructure.CimInstance]::new('MSFT_Setting', 'root/microsoft/windows/desiredstateconfiguration')
+            $instance.CimInstanceProperties.Add([Microsoft.Management.Infrastructure.CimProperty]::Create('Name', 'Present', [Microsoft.Management.Infrastructure.CimFlags]::Property))
+            $instance.CimInstanceProperties.Add([Microsoft.Management.Infrastructure.CimProperty]::Create('Missing', $null, [Microsoft.Management.Infrastructure.CimType]::String, [Microsoft.Management.Infrastructure.CimFlags]::Property))
+
+            $result = ConvertTo-DSCCimInstanceValue -Value $instance
+            $result | Should -Be "MSFT_Setting{`r`n                Name = `"Present`"`r`n            }"
+        }
+
+        It 'Should convert each property with the converter of its own type' {
+            $instance = New-TestCimInstance -ClassName 'MSFT_Setting' -Properties ([ordered]@{
+                    Name    = 'Costs $100 and "quotes"'
+                    Enabled = $true
+                    Ports   = [System.Int32[]]@(80, 443)
+                    Tags    = [System.String[]]@('a', 'b')
+                })
+
+            $expected = @(
+                'MSFT_Setting{'
+                '                Name    = "Costs `$100 and `"quotes`""'
+                '                Enabled = $True'
+                '                Ports   = @(80,443)'
+                '                Tags    = @("a","b")'
+                '            }'
+            ) -join "`r`n"
+
+            ConvertTo-DSCCimInstanceValue -Value $instance | Should -Be $expected
+        }
+
+        It 'Should indent a nested instance relative to its parent' {
+            $team = [Microsoft.Management.Infrastructure.CimInstance]::new('MSFT_Team', 'root/microsoft/windows/desiredstateconfiguration')
+            $team.CimInstanceProperties.Add([Microsoft.Management.Infrastructure.CimProperty]::Create('DisplayName', 'Contoso', [Microsoft.Management.Infrastructure.CimFlags]::Property))
+            $team.CimInstanceProperties.Add([Microsoft.Management.Infrastructure.CimProperty]::Create('Owner', $john, [Microsoft.Management.Infrastructure.CimType]::Instance, [Microsoft.Management.Infrastructure.CimFlags]::Property))
+
+            $expected = @(
+                'MSFT_Team{'
+                '                DisplayName = "Contoso"'
+                '                Owner       = MSFT_TeamMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '            }'
+            ) -join "`r`n"
+
+            ConvertTo-DSCCimInstanceValue -Value $team | Should -Be $expected
+        }
+    }
+
+    Context 'When converting an array of instances' {
+        It 'Should return @() for <Case>' -ForEach @(
+            @{ Case = 'a null value'; Value = $null }
+            @{ Case = 'an empty array'; Value = @() }
+            @{ Case = 'an array with a single null element'; Value = @($null) }
+        ) {
+            ConvertTo-DSCCimInstanceArrayValue -Value $Value | Should -Be '@()'
+        }
+
+        It 'Should separate the instances by a line break instead of a comma' {
+            $expected = @(
+                '@(MSFT_TeamMember{'
+                '                DisplayName = "John Doe"'
+                '                Role        = "Owner"'
+                '            }'
+                '            MSFT_TeamMember{'
+                '                DisplayName = "Jane Roe"'
+                '                Role        = "Member"'
+                '            })'
+            ) -join "`r`n"
+
+            ConvertTo-DSCCimInstanceArrayValue -Value @($john, $jane) | Should -Be $expected
+        }
+    }
+
+    Context 'When the instances are a property of a resource' {
+        It 'Should render an array of instances inside the DSC block' {
+            $expected = @(
+                '            DisplayName          = "Contoso Team";'
+                '            Members              = @(MSFT_TeamMember{'
+                '                DisplayName = "John Doe"'
+                '                Role        = "Owner"'
+                '            }'
+                '            MSFT_TeamMember{'
+                '                DisplayName = "Jane Roe"'
+                '                Role        = "Member"'
+                '            });'
+                ''
+            ) -join "`r`n"
+
+            $params = @{
+                DisplayName = 'Contoso Team'
+                Members     = [Microsoft.Management.Infrastructure.CimInstance[]]@($john, $jane)
+            }
+            Get-DSCBlock -ModulePath 'MSFT_ContosoTeam.psm1' -Params $params | Should -Be $expected
+        }
+
+        It 'Should render a single instance inside the DSC block' {
+            $expected = @(
+                '            Owner                = MSFT_TeamMember{'
+                '                DisplayName = "John Doe"'
+                '                Role        = "Owner"'
+                '            };'
+                ''
+            ) -join "`r`n"
+
+            Get-DSCBlock -ModulePath 'MSFT_ContosoTeam.psm1' -Params @{ Owner = $john } | Should -Be $expected
+        }
+    }
+}
+
+Describe 'Extracting a DSC resource instance' {
+    BeforeAll {
+        $resourcePath = Join-Path -Path $TestDrive -ChildPath 'MSFT_ContosoTeam.psm1'
         @'
 function Get-TargetResource
 {
     param(
+        [Parameter(Mandatory = $true)]
         [System.String]
-        $Name
+        $DisplayName,
+
+        [Parameter()]
+        [System.String]
+        $Description,
+
+        [Parameter()]
+        [ValidateSet('Public', 'Private')]
+        [System.String]
+        $Visibility,
+
+        [Parameter()]
+        [System.Boolean]
+        $AllowGuests,
+
+        [Parameter()]
+        [System.UInt32]
+        $MaxMembers,
+
+        [Parameter()]
+        [System.String[]]
+        $Owners,
+
+        [Parameter()]
+        [Microsoft.Management.Infrastructure.CimInstance[]]
+        $Members,
+
+        [Parameter()]
+        [System.Management.Automation.PSCredential]
+        $Credential
     )
 }
+
 function Set-TargetResource
 {
     param(
+        [Parameter(Mandatory = $true)]
         [System.String]
-        $Name
+        $DisplayName,
+
+        [Parameter()]
+        [System.String]
+        $Description,
+
+        [Parameter()]
+        [ValidateSet('Public', 'Private')]
+        [System.String]
+        $Visibility,
+
+        [Parameter()]
+        [System.Boolean]
+        $AllowGuests,
+
+        [Parameter()]
+        [System.UInt32]
+        $MaxMembers,
+
+        [Parameter()]
+        [System.String[]]
+        $Owners,
+
+        [Parameter()]
+        [Microsoft.Management.Infrastructure.CimInstance[]]
+        $Members,
+
+        [Parameter()]
+        [System.Management.Automation.PSCredential]
+        $Credential
     )
 }
-'@ | Set-Content -Path $extraModulePath
+'@ | Set-Content -Path $resourcePath
     }
 
-    It 'Should format System.String[] values as a quoted array' {
-        $params = @{
-            Name  = 'Test'
-            Items = [string[]]@('A', 'B')
+    Context 'When probing the resource for the properties to extract' {
+        It 'Should return a fake value for every property the resource exposes' {
+            $fakeParameters = Get-DSCFakeParameters -ModulePath $resourcePath
+
+            $fakeParameters['DisplayName'] | Should -Be '*'
+            $fakeParameters['Visibility'] | Should -Be 'Public'
+            $fakeParameters['AllowGuests'] | Should -BeTrue
+            $fakeParameters['MaxMembers'] | Should -Be 0
+            $fakeParameters['Owners'] | Should -Be '1 2'
         }
-        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
-        $result | Should -Match '@\("A","B"\);'
+
+        It 'Should report the declared type of the properties the extract has to convert' {
+            Get-DSCParamType -ModulePath $resourcePath -ParamName '$DisplayName' | Should -Be 'System.String'
+            Get-DSCParamType -ModulePath $resourcePath -ParamName '$AllowGuests' | Should -Be 'System.Boolean'
+            Get-DSCParamType -ModulePath $resourcePath -ParamName '$Owners' | Should -Be 'System.String[]'
+            Get-DSCParamType -ModulePath $resourcePath -ParamName '$Members' | Should -Be 'Microsoft.Management.Infrastructure.CimInstance[]'
+        }
     }
 
-    It 'Should format ArrayList values as a quoted array' {
-        $params = @{
-            Name  = 'Test'
-            Items = [System.Collections.ArrayList]@('A', 'B')
+    Context 'When converting the retrieved values into a DSC block' {
+        BeforeAll {
+            Save-Credentials -UserName 'CONTOSO\svc-admin'
+            Add-ReverseDSCUserName -UserName 'CONTOSO\svc-admin'
+
+            $results = @{
+                DisplayName = 'Contoso "Core" Team'
+                Description = 'Team that costs $100 per month'
+                Visibility  = 'Public'
+                AllowGuests = $false
+                MaxMembers  = 250
+                Owners      = [System.String[]]@('john@contoso.com', 'jane@contoso.com')
+                Credential  = Resolve-Credentials -UserName 'CONTOSO\svc-admin'
+            }
+
+            $dscBlock = Get-DSCBlock -ModulePath $resourcePath -Params $results -NoEscape @('Credential')
         }
-        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
-        $result | Should -Match '@\("A","B"\);'
+
+        It 'Should produce a block that PowerShell can parse' {
+            $tokens = $null
+            $parseErrors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseInput("@{`r`n$dscBlock}", [ref] $tokens, [ref] $parseErrors)
+            $parseErrors | Should -BeNullOrEmpty
+        }
+
+        It 'Should produce a block that evaluates back to the extracted values' {
+            $Credssvc_admin = 'placeholder-credential'
+            $evaluated = & ([System.Management.Automation.ScriptBlock]::Create("@{`r`n$dscBlock}"))
+
+            $evaluated.DisplayName | Should -Be 'Contoso "Core" Team'
+            $evaluated.Description | Should -Be 'Team that costs $100 per month'
+            $evaluated.Visibility | Should -Be 'Public'
+            $evaluated.AllowGuests | Should -BeFalse
+            $evaluated.MaxMembers | Should -Be 250
+            $evaluated.Owners | Should -Be @('john@contoso.com', 'jane@contoso.com')
+            $evaluated.Credential | Should -Be 'placeholder-credential'
+        }
+
+        It 'Should register the account the extract needs in the destination environment' {
+            Test-Credentials -UserName 'CONTOSO\svc-admin' | Should -BeTrue
+            Get-ReverseDSCUserNames | Should -Contain 'CONTOSO\svc-admin'
+        }
     }
 
-    It 'Should format integer arrays as a bare integer array' {
-        $params = @{
-            Name  = 'Test'
-            Ports = [int[]]@(80, 443)
+    Context 'When the resource returns an array of CIM instances' {
+        BeforeAll {
+            $membersAsString = @(
+                '@(MSFT_TeamMember{'
+                '                DisplayName = "John Doe"'
+                '                Role        = "Owner"'
+                '            }'
+                '            MSFT_TeamMember{'
+                '                DisplayName = "Jane Roe"'
+                '                Role        = "Member"'
+                '            })'
+            ) -join "`r`n"
+
+            $results = @{
+                DisplayName = 'Contoso Team'
+                Members     = $membersAsString
+            }
+
+            $dscBlock = Get-DSCBlock -ModulePath $resourcePath -Params $results
+            $dscBlock = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Members' -IsCIMArray $true
         }
-        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
-        $result | Should -Match '@\(80,443\);'
+
+        It 'Should emit the CIM instances unquoted and unescaped' {
+            $expected = @(
+                '            DisplayName          = "Contoso Team";'
+                '            Members              = @(MSFT_TeamMember{'
+                '                DisplayName = "John Doe"'
+                '                Role        = "Owner"'
+                '            }'
+                '            MSFT_TeamMember{'
+                '                DisplayName = "Jane Roe"'
+                '                Role        = "Member"'
+                '            });'
+                ''
+            ) -join "`r`n"
+
+            $dscBlock | Should -Be $expected
+        }
+
+        It 'Should leave the other properties escaped and quoted' {
+            $dscBlock | Should -Match 'DisplayName          = "Contoso Team";'
+        }
     }
 
-    It 'Should format enum values as a quoted string' {
-        $params = @{
-            Name  = 'Test'
-            Color = [System.ConsoleColor]::Red
-        }
-        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
-        $result | Should -Match '= "Red";'
-    }
+    Context 'When the resource returns the CIM instances as objects' {
+        BeforeAll {
+            $results = @{
+                DisplayName = 'Contoso Team'
+                Members     = [Microsoft.Management.Infrastructure.CimInstance[]]@(
+                    New-TestCimInstance -ClassName 'MSFT_TeamMember' -Properties ([ordered]@{ DisplayName = 'John Doe'; Role = 'Owner' })
+                    New-TestCimInstance -ClassName 'MSFT_TeamMember' -Properties ([ordered]@{ DisplayName = 'Jane Roe'; Role = 'Member' })
+                )
+            }
 
-    It 'Should format non-string, non-enum values as a bare value' {
-        $params = @{
-            Name = 'Test'
-            Port = 8080
+            $dscBlock = Get-DSCBlock -ModulePath $resourcePath -Params $results
         }
-        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
-        $result | Should -Match '= 8080;'
-    }
 
-    It 'Should handle parameter names longer than 20 characters' {
-        $params = @{
-            ThisParameterNameIsLongerThanTwentyCharacters = 'Test'
+        It 'Should produce the same DSC block as the pre-built string does' {
+            $expected = @(
+                '            DisplayName          = "Contoso Team";'
+                '            Members              = @(MSFT_TeamMember{'
+                '                DisplayName = "John Doe"'
+                '                Role        = "Owner"'
+                '            }'
+                '            MSFT_TeamMember{'
+                '                DisplayName = "Jane Roe"'
+                '                Role        = "Member"'
+                '            });'
+                ''
+            ) -join "`r`n"
+
+            $dscBlock | Should -Be $expected
         }
-        $result = Get-DSCBlock -ModulePath $extraModulePath -Params $params
-        $result | Should -Match 'ThisParameterNameIsLongerThanTwentyCharacters = "Test";'
+
+        It 'Should be emitted unescaped so that Convert-DSCStringParamToVariable is not needed' {
+            $dscBlock | Should -Not -Match '`"'
+        }
+
+        It 'Should lose its property quotes when Convert-DSCStringParamToVariable is applied anyway' {
+            $converted = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Members' -IsCIMArray $true
+            $converted | Should -Not -Be $dscBlock
+            $converted | Should -Match 'DisplayName = John Doe'
+        }
     }
 }
 
-Describe 'Convert-DSCStringParamToVariable - additional scenarios' {
-    Context 'When the DSC block has no terminating line breaks' {
-        It 'Should remove quotes from the parameter value' {
-            $dscBlock = '            ParamName            = "SomeValue"'
-            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
-            $result | Should -Be '            ParamName            = SomeValue'
-        }
-    }
-
-    Context 'When converting a CIM array parameter' {
-        It 'Should remove quotes from values inside the CIM array' {
-            $dscBlock = "            Members = @(`r`n                @{`r`n                    Name = `"x`"`r`n                },`r`n                @{`r`n                    Name = `"y`"`r`n                }`r`n            );`r`n"
-            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Members' -IsCIMArray $true
-            $result | Should -Match 'Name = x'
-            $result | Should -Not -Match 'Name = "x"'
-        }
-    }
-
-    Context 'When converting a CIM object parameter' {
-        It 'Should remove quotes from the escaped XML content' {
-            $dscBlock = '            Content = "<xml version=""1.0""><test>""escaped""</test></xml>";' + "`r`n"
-            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'Content' -IsCIMObject $true
-            $result | Should -Match 'Content = <xml version=1.0><test>escaped</test></xml>;'
-        }
-    }
-
-    Context 'When the value of another parameter appears after the target parameter' {
-        It 'Should only modify the target parameter value' {
-            $dscBlock = "            ParamName = `"Value`";`r`n            Other = `"X`";`r`n"
-            $result = Convert-DSCStringParamToVariable -DSCBlock $dscBlock -ParameterName 'ParamName'
-            $result | Should -Match 'ParamName = Value;'
-            $result | Should -Match 'Other = "X";'
-        }
-    }
-}
-
-Describe 'ConvertTo-DSCObjectArrayValue - additional scenarios' {
-    It 'Should return @() for an array with a single null element' {
-        $result = ConvertTo-DSCObjectArrayValue -Value @( $null )
-        $result | Should -Be '@()'
-    }
-
-    It 'Should not escape values when NoEscape is specified' {
-        $result = ConvertTo-DSCObjectArrayValue -Value @('a', 'b') -NoEscape $true
-        $result | Should -Be '@(ab)'
-    }
-
-    It 'Should remove a trailing comma in NoEscape mode' {
-        $result = ConvertTo-DSCObjectArrayValue -Value @('abc,') -NoEscape $true
-        $result | Should -Be '@(abc)'
-    }
-
-    It 'Should concatenate non-string, non-hashtable elements' {
-        $result = ConvertTo-DSCObjectArrayValue -Value @(1, 2)
-        $result | Should -Be '@(12)'
-    }
-}
-
-Describe 'ConvertTo-DSCIntegerArrayValue - additional scenarios' {
-    It 'Should return @() for an array with a single null element' {
-        $result = ConvertTo-DSCIntegerArrayValue -Value @( $null )
-        $result | Should -Be '@()'
-    }
-}
-
-Describe 'Get-ConfigurationDataContent - additional scenarios' {
-    BeforeEach {
+Describe 'Generating a ConfigurationData document' {
+    BeforeAll {
         Clear-ConfigurationDataContent
+
+        Add-ConfigurationDataEntry -Node 'localhost' -Key 'TenantId' -Value 'contoso.onmicrosoft.com' -Description 'The tenant the configuration applies to'
+        Add-ConfigurationDataEntry -Node 'localhost' -Key 'ServiceUrls' -Value '@("https://contoso.sharepoint.com","https://contoso-my.sharepoint.com")'
+        Add-ConfigurationDataEntry -Node 'localhost' -Key 'Environment' -Value 'Production'
+        Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'ApplicationId' -Value '12345678-1234-1234-1234-123456789012'
+        Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Workloads' -Value @('SPO', 'EXO', 'TEAMS') -Description 'Workloads included in the extract'
+
+        $documentPath = Join-Path -Path $TestDrive -ChildPath 'ConfigurationData.psd1'
+        New-ConfigurationDataDocument -Path $documentPath
+
+        $document = Get-Content -Path $documentPath -Raw
+        $importedData = Import-PowerShellDataFile -Path $documentPath
+        $node = $importedData.AllNodes | Where-Object -FilterScript { $_.NodeName -eq 'localhost' }
     }
 
-    Context 'When node values start with @( or a variable prefix' {
-        It 'Should emit array and variable values unquoted' {
-            Add-ConfigurationDataEntry -Node 'node1' -Key 'Feat' -Value '@("a","b")'
-            Add-ConfigurationDataEntry -Node 'node1' -Key 'Var' -Value '$data'
-            $result = Get-ConfigurationDataContent
-            $result | Should -Match 'Feat = @\("a","b"\)'
-            $result | Should -Match 'Var = \$data'
-        }
+    It 'Should write a file that PowerShell can import as data' {
+        $importedData | Should -Not -BeNullOrEmpty
+        $importedData.Keys | Should -Contain 'AllNodes'
+        $importedData.Keys | Should -Contain 'NonNodeData'
     }
 
-    Context 'When node values are object arrays' {
-        It 'Should emit the array via ConvertTo-ConfigurationDataString' {
-            Add-ConfigurationDataEntry -Node 'node1' -Key 'Arr' -Value @('x', 'y')
-            $result = Get-ConfigurationDataContent
-            $result | Should -Match '"x";'
-            $result | Should -Match '"y";'
-        }
+    It 'Should allow plain text passwords and domain users on the node' {
+        $node.PSDscAllowPlainTextPassword | Should -BeTrue
+        $node.PSDscAllowDomainUser | Should -BeTrue
     }
 
-    Context 'When NonNodeData entries are present' {
-        It 'Should include the NonNodeData section with string values' {
-            Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Thumbprint' -Value 'abc123' -Description 'cert thumbprint'
-            $result = Get-ConfigurationDataContent
-            $result | Should -Match '# cert thumbprint'
-            $result | Should -Match 'Thumbprint = "abc123"'
-        }
-
-        It 'Should emit object arrays in NonNodeData as quoted arrays' {
-            Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Servers' -Value @('s1', 's2')
-            $result = Get-ConfigurationDataContent
-            $result | Should -Match '@\("s1","s2"\)'
-        }
-
-        It 'Should emit array strings in NonNodeData unquoted' {
-            Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'RawList' -Value '@("a","b")'
-            $result = Get-ConfigurationDataContent
-            $result | Should -Match 'RawList = @\("a","b"\)'
-        }
-
-        It 'Should emit a warning when a NonNodeData value cannot be converted' {
-            Add-ConfigurationDataEntry -Node 'NonNodeData' -Key 'Bad' -Value 'x'
-            $Script:ConfigurationDataContent['NonNodeData'].Entries['Bad'].Value = $null
-            { $null = Get-ConfigurationDataContent -WarningAction SilentlyContinue } | Should -Not -Throw
-        }
-    }
-}
-
-Describe 'ConvertTo-ConfigurationDataString - nested structures' {
-    It 'Should format an array containing a hashtable' {
-        $result = ConvertTo-ConfigurationDataString @(@{ A = 'B' })
-        $result | Should -Match '@\('
-        $result | Should -Match 'A = "B";'
+    It 'Should round-trip the scalar node entries' {
+        $node.TenantId | Should -Be 'contoso.onmicrosoft.com'
+        $node.Environment | Should -Be 'Production'
     }
 
-    It 'Should format a nested array' {
-        $result = ConvertTo-ConfigurationDataString @(@('x', 'y'))
-        $result | Should -Match '"x";'
-        $result | Should -Match '"y";'
+    It 'Should round-trip the array node entries as arrays' {
+        $node.ServiceUrls | Should -HaveCount 2
+        $node.ServiceUrls | Should -Contain 'https://contoso.sharepoint.com'
+    }
+
+    It 'Should round-trip the NonNodeData entries' {
+        $importedData.NonNodeData.ApplicationId | Should -Be '12345678-1234-1234-1234-123456789012'
+        $importedData.NonNodeData.Workloads | Should -Be @('SPO', 'EXO', 'TEAMS')
+    }
+
+    It 'Should document the entries that have a description' {
+        $document | Should -Match '# The tenant the configuration applies to'
+        $document | Should -Match '# Workloads included in the extract'
+    }
+
+    It 'Should not emit an empty comment for the entries without a description' {
+        ($document -split "`r`n" | Where-Object -FilterScript { $_.Trim() -eq '#' }) | Should -BeNullOrEmpty
     }
 }
 
-} # InModuleScope
+Describe 'Module manifest' {
+    BeforeAll {
+        $manifestPath = Join-Path -Path $PSScriptRoot -ChildPath '..\ReverseDSC.psd1'
+        $manifest = Test-ModuleManifest -Path $manifestPath -ErrorAction SilentlyContinue
+        $manifestData = Import-PowerShellDataFile -Path $manifestPath
+    }
 
-# Cleanup
-Remove-Module -Name 'ReverseDSC.Core' -ErrorAction SilentlyContinue
+    It 'Should be a valid module manifest' {
+        $manifest | Should -Not -BeNullOrEmpty
+    }
+
+    It 'Should load the core module as a nested module' {
+        $manifestData.NestedModules | Should -Contain 'ReverseDSC.Core.psm1'
+    }
+
+    It 'Should only export functions that the core module defines' {
+        $undefined = $manifestData.FunctionsToExport |
+            Where-Object -FilterScript { -not (Get-Command -Name $_ -Module 'ReverseDSC.Core' -ErrorAction SilentlyContinue) }
+        $undefined | Should -BeNullOrEmpty
+    }
+
+    It 'Should export <_>' -ForEach @(
+        'Clear-ConfigurationDataContent'
+        'Clear-ReverseDSCUserNames'
+        'Get-DSCParamType'
+        'Get-DSCBlock'
+        'Get-DSCFakeParameters'
+        'Get-DSCDependsOnBlock'
+        'Get-Credentials'
+        'Resolve-Credentials'
+        'Save-Credentials'
+        'Test-Credentials'
+        'Convert-DSCStringParamToVariable'
+        'Get-ConfigurationDataContent'
+        'New-ConfigurationDataDocument'
+        'Add-ConfigurationDataEntry'
+        'Get-ConfigurationDataEntry'
+        'Add-ReverseDSCUserName'
+    ) {
+        $manifestData.FunctionsToExport | Should -Contain $_
+    }
+}
+
+Describe 'Importing the module' {
+    BeforeAll {
+        $coreModulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\ReverseDSC.Core.psm1'
+    }
+
+    It 'Should reset the state that a previous extract accumulated' {
+        Save-Credentials -UserName 'CONTOSO\admin'
+        Add-ReverseDSCUserName -UserName 'admin@contoso.com'
+        Add-ConfigurationDataEntry -Node 'localhost' -Key 'TenantId' -Value 'contoso.onmicrosoft.com'
+
+        Import-Module -Name $coreModulePath -Force
+
+        Test-Credentials -UserName 'CONTOSO\admin' | Should -BeFalse
+        Get-ReverseDSCUserNames | Should -BeNullOrEmpty
+        Get-ConfigurationDataEntry -Node 'localhost' -Key 'TenantId' | Should -BeNullOrEmpty
+    }
+}
+
+AfterAll {
+    Remove-Module -Name 'ReverseDSC.Core' -ErrorAction SilentlyContinue
+}
