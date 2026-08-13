@@ -271,18 +271,7 @@ function ConvertTo-DSCCredentialValue
         return "Get-Credential -Message $ParameterName"
     }
 
-    $credString = $Value.ToString()
-    if ($credString -like "`$Creds*")
-    {
-        return $credString.Replace("-", "_").Replace(".", "_")
-    }
-
     $userName = $Value.UserName
-    if ($null -eq $userName)
-    {
-        $userName = ($credString.Split('\'))[1]
-    }
-
     if ($userName.Contains("@") -and -not $userName.Contains("\"))
     {
         $cleanName = ($userName.Split('@'))[0]
@@ -506,19 +495,266 @@ function ConvertTo-DSCObjectArrayValue
 
 <#
 .SYNOPSIS
+    Converts a CIM instance parameter value to its DSC representation.
+
+.DESCRIPTION
+    Renders the CIM instance as the MOF style block that DSC configurations
+    expect, listing every property of the instance that has a value. The
+    resulting string is already unquoted and unescaped, and should therefore
+    not be passed through Convert-DSCStringParamToVariable.
+
+.PARAMETER Value
+    The CIM instance to convert.
+
+.PARAMETER Indent
+    Number of spaces the closing brace of the block is indented by. The
+    properties of the instance are indented by four additional spaces.
+
+.PARAMETER NoEscape
+    If true, string properties will not be escaped.
+
+.PARAMETER AllowVariables
+    If true, PowerShell variables in strings are preserved.
+#>
+function ConvertTo-DSCCimInstanceValue
+{
+    [CmdletBinding()]
+    [OutputType([System.String])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [Microsoft.Management.Infrastructure.CimInstance]
+        $Value,
+
+        [Parameter()]
+        [System.Int32]
+        $Indent = 12,
+
+        [Parameter()]
+        [System.Boolean]
+        $NoEscape = $false,
+
+        [Parameter()]
+        [System.Boolean]
+        $AllowVariables = $false
+    )
+
+    $className = $Value.CimSystemProperties.ClassName
+    $closingIndent = ' ' * $Indent
+
+    $properties = @($Value.CimInstanceProperties | Where-Object -FilterScript { $null -ne $_.Value })
+    if ($properties.Count -eq 0)
+    {
+        return "$className{`r`n$closingIndent}"
+    }
+
+    $maxPropertyNameLength = 0
+    foreach ($property in $properties)
+    {
+        if ($property.Name.Length -gt $maxPropertyNameLength)
+        {
+            $maxPropertyNameLength = $property.Name.Length
+        }
+    }
+
+    $propertyIndent = ' ' * ($Indent + 4)
+    $lines = foreach ($property in $properties)
+    {
+        $propertyValue = ConvertTo-DSCValue -Value $property.Value `
+            -ParameterName $property.Name `
+            -Indent ($Indent + 4) `
+            -NoEscape $NoEscape `
+            -AllowVariables $AllowVariables
+        "$propertyIndent$($property.Name.PadRight($maxPropertyNameLength)) = $propertyValue"
+    }
+
+    return "$className{`r`n$($lines -join "`r`n")`r`n$closingIndent}"
+}
+
+<#
+.SYNOPSIS
+    Converts an array of CIM instances to its DSC representation.
+
+.PARAMETER Value
+    The array of CIM instances to convert.
+
+.PARAMETER Indent
+    Number of spaces each instance in the array is indented by.
+
+.PARAMETER NoEscape
+    If true, string properties will not be escaped.
+
+.PARAMETER AllowVariables
+    If true, PowerShell variables in strings are preserved.
+#>
+function ConvertTo-DSCCimInstanceArrayValue
+{
+    [CmdletBinding()]
+    [OutputType([System.String])]
+    param(
+        [Parameter()]
+        [Microsoft.Management.Infrastructure.CimInstance[]]
+        $Value,
+
+        [Parameter()]
+        [System.Int32]
+        $Indent = 12,
+
+        [Parameter()]
+        [System.Boolean]
+        $NoEscape = $false,
+
+        [Parameter()]
+        [System.Boolean]
+        $AllowVariables = $false
+    )
+
+    if ($null -eq $Value -or $Value.Count -eq 0)
+    {
+        return "@()"
+    }
+
+    if ($Value.Count -eq 1 -and $null -eq $Value[0])
+    {
+        return "@()"
+    }
+
+    $instances = foreach ($instance in $Value)
+    {
+        ConvertTo-DSCCimInstanceValue -Value $instance -Indent $Indent -NoEscape $NoEscape -AllowVariables $AllowVariables
+    }
+
+    return "@($($instances -join "`r`n$(' ' * $Indent)"))"
+}
+
+<#
+.SYNOPSIS
+    Converts a single value to its DSC representation.
+
+.DESCRIPTION
+    Dispatches the value to the converter that matches its .NET type name.
+    This is the single place where the mapping between the type of a value and
+    its DSC representation is defined. It is used both for the properties of a
+    resource instance and for the properties of the CIM instances they contain.
+
+.PARAMETER Value
+    The value to convert.
+
+.PARAMETER ParameterName
+    Name of the parameter the value belongs to. Only used to build the
+    Get-Credential prompt of a credential that has no value.
+
+.PARAMETER Indent
+    Number of spaces the value is indented by. Only relevant for CIM instances,
+    which span multiple lines.
+
+.PARAMETER NoEscape
+    If true, string values will not be escaped.
+
+.PARAMETER AllowVariables
+    If true, PowerShell variables in strings are preserved.
+#>
+function ConvertTo-DSCValue
+{
+    [CmdletBinding()]
+    [OutputType([System.String])]
+    param(
+        [Parameter()]
+        [System.Object]
+        $Value,
+
+        [Parameter(Mandatory = $true)]
+        [System.String]
+        $ParameterName,
+
+        [Parameter()]
+        [System.Int32]
+        $Indent = 12,
+
+        [Parameter()]
+        [System.Boolean]
+        $NoEscape = $false,
+
+        [Parameter()]
+        [System.Boolean]
+        $AllowVariables = $false
+    )
+
+    switch -Regex ($Value.GetType().Name)
+    {
+        '^(String|Guid|TimeSpan|DateTime)$'
+        {
+            return ConvertTo-DSCStringValue -Value $Value -NoEscape $NoEscape -AllowVariables $AllowVariables
+        }
+        '^Boolean$'
+        {
+            return ConvertTo-DSCBooleanValue -Value $Value
+        }
+        '^PSCredential$'
+        {
+            return ConvertTo-DSCCredentialValue -Value $Value -ParameterName $ParameterName
+        }
+        '^Hashtable$'
+        {
+            return ConvertTo-DSCHashtableValue -Value $Value
+        }
+        '^(String\[\]|ArrayList|List`1)$'
+        {
+            return ConvertTo-DSCStringArrayValue -Value $Value -NoEscape $NoEscape -AllowVariables $AllowVariables
+        }
+        'Int.*\[\]'
+        {
+            return ConvertTo-DSCIntegerArrayValue -Value $Value
+        }
+        '^CimInstance$'
+        {
+            return ConvertTo-DSCCimInstanceValue -Value $Value -Indent $Indent -NoEscape $NoEscape -AllowVariables $AllowVariables
+        }
+        '^CimInstance\[\]$'
+        {
+            return ConvertTo-DSCCimInstanceArrayValue -Value $Value -Indent $Indent -NoEscape $NoEscape -AllowVariables $AllowVariables
+        }
+        '^Object\[\]$'
+        {
+            return ConvertTo-DSCObjectArrayValue -Value $Value -NoEscape $NoEscape -AllowVariables $AllowVariables
+        }
+    }
+
+    if ($Value.GetType().BaseType.Name -eq "Enum")
+    {
+        return "`"$Value`""
+    }
+
+    return "$Value"
+}
+
+<#
+.SYNOPSIS
     Generate the DSC string representing the resource's instance.
+
 .DESCRIPTION
     This function is really the core of ReverseDSC. It takes in an array of
     parameters and returns the DSC string that represents the given instance
     of the specified resource.
+
+    CIM instances and arrays of CIM instances are rendered as MOF style blocks
+    that are already unquoted and unescaped. Only values that were passed in as
+    a pre-built string still need to be run through
+    Convert-DSCStringParamToVariable afterwards.
+
 .PARAMETER ModulePath
     Full file path to the .psm1 module we are looking to get an instance of.
     In most cases this will be the full path to the .psm1 file of the DSC resource.
+
 .PARAMETER Params
     Hashtable that contains the list of Key properties and their values.
+
 .PARAMETER NoEscape
     Array of string values that represent the list of parameters that should
     not be escaped when generating the DSC string.
+
+.PARAMETER AllowVariablesInStrings
+    When specified, PowerShell variables ($...) inside string values are
+    preserved instead of being escaped.
 #>
 function Get-DSCBlock
 {
@@ -564,74 +800,11 @@ function Get-DSCBlock
     $dscBlock = [System.Text.StringBuilder]::new()
     foreach ($paramName in $NewParams.Keys)
     {
-        $paramValue = $NewParams[$paramName]
-        $paramType = $paramValue.GetType().Name
-
         $isNoEscape = $NoEscape -contains $paramName
-        $value = $null
-
-        # Dispatch to type-specific converter
-        switch -Regex ($paramType)
-        {
-            '^(System\.String|String|Guid|TimeSpan|DateTime)$'
-            {
-                $value = ConvertTo-DSCStringValue -Value $paramValue -NoEscape $isNoEscape -AllowVariables $AllowVariablesInStrings
-                break
-            }
-            '^(System\.Boolean|Boolean)$'
-            {
-                $value = ConvertTo-DSCBooleanValue -Value $paramValue
-                break
-            }
-            '^System\.Management\.Automation\.PSCredential$'
-            {
-                $value = ConvertTo-DSCCredentialValue -Value $paramValue -ParameterName $paramName
-                break
-            }
-            '^(System\.Collections\.Hashtable|Hashtable)$'
-            {
-                $value = ConvertTo-DSCHashtableValue -Value $paramValue
-                break
-            }
-            '^(System\.String\[\]|String\[\]|ArrayList|List`1)$'
-            {
-                if ($paramValue.ToString().StartsWith("`$ConfigurationData."))
-                {
-                    $value = $paramValue
-                }
-                else
-                {
-                    $value = ConvertTo-DSCStringArrayValue -Value $paramValue -NoEscape $isNoEscape -AllowVariables $AllowVariablesInStrings
-                }
-                break
-            }
-            'Int.*\[\]'
-            {
-                $value = ConvertTo-DSCIntegerArrayValue -Value $paramValue
-                break
-            }
-            '^(Object\[\]|Microsoft\.Management\.Infrastructure\.CimInstance\[\])$'
-            {
-                $value = ConvertTo-DSCObjectArrayValue -Value $paramValue -NoEscape $isNoEscape -AllowVariables $AllowVariablesInStrings
-                break
-            }
-            '^CimInstance$'
-            {
-                $value = $paramValue
-                break
-            }
-            default
-            {
-                if ($paramValue.GetType().BaseType.Name -eq "Enum")
-                {
-                    $value = "`"$paramValue`""
-                }
-                else
-                {
-                    $value = "$paramValue"
-                }
-            }
-        }
+        $value = ConvertTo-DSCValue -Value $NewParams[$paramName] `
+            -ParameterName $paramName `
+            -NoEscape $isNoEscape `
+            -AllowVariables $AllowVariablesInStrings
 
         # Check for comment/metadata and insert it back here
         $PropertyMetadataKeyName = "_metadata_$paramName"
@@ -1030,6 +1203,13 @@ function Convert-DSCStringParamToVariable
                 }
             }
         }
+
+        # No matching closing quote was found, the value cannot be converted any further.
+        if ($startPosition -lt 0)
+        {
+            break
+        }
+
         $startPosition = $DSCBlock.IndexOf("`"", $startPosition)
         <#
             When the parameter is a CIM array, it may contain parameter with double quotes
@@ -1163,7 +1343,8 @@ function Add-ConfigurationDataEntry
 
 .PARAMETER Node
     The name of the node or section in the hashtable we want to look for
-    the key in.
+    the key in. When omitted, all nodes are searched and the first match
+    is returned.
 
 .PARAMETER Key
     The name of the parameter to retrieve the value from.
@@ -1173,7 +1354,9 @@ function Get-ConfigurationDataEntry
     [CmdletBinding()]
     [OutputType([System.Collections.Hashtable])]
     param(
-        [Parameter(Mandatory = $true)]
+        [Parameter()]
+        [AllowNull()]
+        [AllowEmptyString()]
         [System.String]
         $Node,
 
@@ -1181,23 +1364,20 @@ function Get-ConfigurationDataEntry
         [System.String]
         $Key
     )
-    <# If node is null, then search in all nodes and return first result found. #>
-    if ($null -eq $Node)
+
+    if ([System.String]::IsNullOrEmpty($Node))
     {
-        foreach ($Node in $Script:ConfigurationDataContent.Keys)
+        foreach ($nodeName in $Script:ConfigurationDataContent.Keys)
         {
-            if ($Script:ConfigurationDataContent[$Node].Entries.Contains($Key))
+            if ($Script:ConfigurationDataContent[$nodeName].Entries.Contains($Key))
             {
-                return $Script:ConfigurationDataContent[$Node].Entries[$Key]
+                return $Script:ConfigurationDataContent[$nodeName].Entries[$Key]
             }
         }
     }
-    else
+    elseif ($Script:ConfigurationDataContent.ContainsKey($Node) -and $Script:ConfigurationDataContent[$Node].Entries.Contains($Key))
     {
-        if ($Script:ConfigurationDataContent.ContainsKey($Node) -and $Script:ConfigurationDataContent[$Node].Entries.Contains($Key))
-        {
-            return $Script:ConfigurationDataContent[$Node].Entries[$Key]
-        }
+        return $Script:ConfigurationDataContent[$Node].Entries[$Key]
     }
 }
 
@@ -1245,7 +1425,7 @@ function Get-ConfigurationDataContent
         $keyValuePair = $Script:ConfigurationDataContent[$node].Entries
         foreach ($key in $keyValuePair.Keys | Sort-Object)
         {
-            if ($null -ne $keyValuePair[$key].Description)
+            if (-not [System.String]::IsNullOrEmpty($keyValuePair[$key].Description))
             {
                 [void]$psd1Content.Append("            # $($keyValuePair[$key].Description)`r`n")
             }
@@ -1293,7 +1473,7 @@ function Get-ConfigurationDataContent
                     $value = "@($($quotedItems -join ','))"
                 }
 
-                if ($null -ne $keyValuePair[$key].Description)
+                if (-not [System.String]::IsNullOrEmpty($keyValuePair[$key].Description))
                 {
                     [void]$psd1Content.Append("            # $($keyValuePair[$key].Description)`r`n")
                 }
@@ -1312,10 +1492,6 @@ function Get-ConfigurationDataContent
             }
         }
         [void]$psd1Content.Append("        }`r`n")
-    }
-    if ($psd1Content.Length -ge 3 -and $psd1Content.ToString($psd1Content.Length - 3, 3) -eq ",`r`n")
-    {
-        [void]$psd1Content.Remove($psd1Content.Length - 3, 1)
     }
     [void]$psd1Content.Append("    )`r`n")
     [void]$psd1Content.Append("}")
