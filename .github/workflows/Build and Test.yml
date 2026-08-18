@@ -39,41 +39,7 @@ jobs:
               $results = Invoke-TestHarness
           }
 
-          $coverage = $results.CodeCoverage
-          $summary = @(
-              '## Unit Test Results'
-              ''
-              "| Passed | Failed | Skipped |"
-              "| ---: | ---: | ---: |"
-              "| $($results.PassedCount) | $($results.FailedCount) | $($results.SkippedCount) |"
-              ''
-              '## Code Coverage'
-              ''
-              "**$([System.Math]::Round($coverage.CoveragePercent, 2))%** of $($coverage.CommandsAnalyzedCount) commands covered."
-              ''
-              '| File | Covered | Missed |'
-              '| :--- | ---: | ---: |'
-          )
-          $perFile = @{}
-          foreach ($command in @($coverage.CommandsExecuted) + @($coverage.CommandsMissed))
-          {
-              if ($null -eq $command) { continue }
-              if (-not $perFile.ContainsKey($command.File)) { $perFile[$command.File] = @{ Analyzed = 0; Missed = 0 } }
-              $perFile[$command.File].Analyzed++
-          }
-          foreach ($command in @($coverage.CommandsMissed))
-          {
-              if ($null -eq $command) { continue }
-              $perFile[$command.File].Missed++
-          }
-          foreach ($file in ($perFile.Keys | Sort-Object))
-          {
-              $analyzed = $perFile[$file].Analyzed
-              $missed = $perFile[$file].Missed
-              $percentage = [System.Math]::Round(($analyzed - $missed) / $analyzed * 100, 2)
-              $summary += "| $(Split-Path -Path $file -Leaf) | $percentage% | $missed |"
-          }
-          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-TestHarnessSummary -Result $results -Path $env:GITHUB_STEP_SUMMARY
 
           if ($results.FailedCount -gt 0)
           {
