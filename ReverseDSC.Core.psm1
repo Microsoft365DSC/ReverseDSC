@@ -1,6 +1,7 @@
 $Script:CredsRepo = @()
 $Script:ModuleAstCache = @{}
 $Script:SetTargetResourceParamCache = @{}
+$Script:DscClassTypeCache = @{}
 $Script:DscParamTypeMap = @{
     'Microsoft.Management.Infrastructure.CimInstance'   = 'System.Collections.Hashtable'
     'Microsoft.Management.Infrastructure.CimInstance[]' = 'Microsoft.Management.Infrastructure.CimInstance[]'
@@ -620,10 +621,324 @@ function ConvertTo-DSCCimInstanceArrayValue
 
     $instances = foreach ($instance in $Value)
     {
-        ConvertTo-DSCCimInstanceValue -Value $instance -Indent $Indent -NoEscape $NoEscape -AllowVariables $AllowVariables
+        ConvertTo-DSCCimInstanceValue -Value $instance -Indent ($Indent + 4) -NoEscape $NoEscape -AllowVariables $AllowVariables
     }
 
-    return "@($($instances -join "`r`n$(' ' * $Indent)"))"
+    $instanceIndent = ' ' * ($Indent + 4)
+    return "@(`r`n$instanceIndent$($instances -join "`r`n$instanceIndent")`r`n$(' ' * $Indent))"
+}
+
+<#
+.SYNOPSIS
+    Determines whether the specified type is a class based DSC complex type.
+
+.DESCRIPTION
+    A complex type is a class that either carries the [DscProperty()] attribute
+    on one of its properties or has a name with the MSFT_ prefix. String,
+    Hashtable, CimInstance and PSCustomObject are classes as well, so the IsClass
+    flag alone cannot decide. Arrays never qualify, as an array type reports
+    IsClass as true and carries the name of the type of its elements.
+
+    The result is cached per type, as the check runs for every converted value.
+
+.PARAMETER Type
+    The type to inspect.
+#>
+function Test-IsDscClassType
+{
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
+    param(
+        [Parameter()]
+        [System.Type]
+        $Type
+    )
+
+    if ($null -eq $Type -or $Type.IsArray -or -not $Type.IsClass)
+    {
+        return $false
+    }
+
+    if ($Script:DscClassTypeCache.ContainsKey($Type))
+    {
+        return $Script:DscClassTypeCache[$Type]
+    }
+
+    $isClassType = $false
+    if ($Type.Name -like 'MSFT_*')
+    {
+        $isClassType = $true
+    }
+    else
+    {
+        foreach ($property in $Type.GetProperties())
+        {
+            if (@($property.GetCustomAttributes([System.Management.Automation.DscPropertyAttribute], $true)).Count -gt 0)
+            {
+                $isClassType = $true
+                break
+            }
+        }
+    }
+
+    $Script:DscClassTypeCache[$Type] = $isClassType
+    return $isClassType
+}
+
+<#
+.SYNOPSIS
+    Determines whether the specified value is an instance of a class based DSC
+    complex type.
+
+.PARAMETER Value
+    The value to inspect.
+#>
+function Test-IsDscClassInstanceType
+{
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
+    param(
+        [Parameter()]
+        [System.Object]
+        $Value
+    )
+
+    if ($null -eq $Value)
+    {
+        return $false
+    }
+
+    return (Test-IsDscClassType -Type $Value.GetType())
+}
+
+<#
+.SYNOPSIS
+    Determines whether the specified value is an array of instances of a class
+    based DSC complex type.
+
+.DESCRIPTION
+    A strongly typed array is identified by the type of its elements, a plain
+    System.Object[] by its first element that has a value. An untyped array of
+    nulls is not recognized and falls through to the object array converter,
+    which renders it as @() just the same.
+
+.PARAMETER Value
+    The value to inspect.
+#>
+function Test-IsDscClassInstanceArrayType
+{
+    [CmdletBinding()]
+    [OutputType([System.Boolean])]
+    param(
+        [Parameter()]
+        [System.Object]
+        $Value
+    )
+
+    if ($null -eq $Value -or $Value -isnot [System.Array])
+    {
+        return $false
+    }
+
+    if (Test-IsDscClassType -Type $Value.GetType().GetElementType())
+    {
+        return $true
+    }
+
+    foreach ($item in $Value)
+    {
+        if ($null -ne $item)
+        {
+            return (Test-IsDscClassInstanceType -Value $item)
+        }
+    }
+
+    return $false
+}
+
+<#
+.SYNOPSIS
+    Returns the properties of a class instance that have a value.
+
+.DESCRIPTION
+    A class materializes every property it declares, so the ones that were never
+    set come back as null and are skipped. The remaining ones are returned sorted
+    by name.
+
+    A property of a non nullable value type materializes to its zero value and
+    can therefore not be told apart from one that was set to it. Complex types
+    have to declare such a property as System.Nullable[T] to allow omitting it.
+
+.PARAMETER Value
+    The class instance to read the properties of.
+#>
+function Get-DSCClassInstanceProperty
+{
+    [CmdletBinding()]
+    [OutputType([System.Object[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Object]
+        $Value
+    )
+
+    $properties = [System.Collections.Generic.List[System.Object]]::new()
+    $bindingFlags = [System.Reflection.BindingFlags]'Public, Instance'
+    foreach ($property in $Value.GetType().GetProperties($bindingFlags) | Sort-Object -Property Name)
+    {
+        $propertyValue = $property.GetValue($Value)
+        if ($null -eq $propertyValue)
+        {
+            continue
+        }
+
+        $properties.Add([PSCustomObject] @{
+                Name  = $property.Name
+                Value = $propertyValue
+            })
+    }
+
+    return $properties.ToArray()
+}
+
+<#
+.SYNOPSIS
+    Converts an instance of a class based DSC complex type to its DSC
+    representation.
+
+.DESCRIPTION
+    Renders the class instance as the MOF style block that DSC configurations
+    expect, listing every property of the instance that has a value. The
+    resulting string is already unquoted and unescaped, and should therefore
+    not be passed through Convert-DSCStringParamToVariable.
+
+.PARAMETER Value
+    The class instance to convert.
+
+.PARAMETER Indent
+    Number of spaces the closing brace of the block is indented by. The
+    properties of the instance are indented by four additional spaces.
+
+.PARAMETER NoEscape
+    If true, string properties will not be escaped.
+
+.PARAMETER AllowVariables
+    If true, PowerShell variables in strings are preserved.
+#>
+function ConvertTo-DSCClassInstanceValue
+{
+    [CmdletBinding()]
+    [OutputType([System.String])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Object]
+        $Value,
+
+        [Parameter()]
+        [System.Int32]
+        $Indent = 12,
+
+        [Parameter()]
+        [System.Boolean]
+        $NoEscape = $false,
+
+        [Parameter()]
+        [System.Boolean]
+        $AllowVariables = $false
+    )
+
+    $className = $Value.GetType().Name
+    $closingIndent = ' ' * $Indent
+
+    $properties = @(Get-DSCClassInstanceProperty -Value $Value)
+    if ($properties.Count -eq 0)
+    {
+        return "$className{`r`n$closingIndent}"
+    }
+
+    $maxPropertyNameLength = 0
+    foreach ($property in $properties)
+    {
+        if ($property.Name.Length -gt $maxPropertyNameLength)
+        {
+            $maxPropertyNameLength = $property.Name.Length
+        }
+    }
+
+    $propertyIndent = ' ' * ($Indent + 4)
+    $lines = foreach ($property in $properties)
+    {
+        $propertyValue = ConvertTo-DSCValue -Value $property.Value `
+            -ParameterName $property.Name `
+            -Indent ($Indent + 4) `
+            -NoEscape $NoEscape `
+            -AllowVariables $AllowVariables
+        "$propertyIndent$($property.Name.PadRight($maxPropertyNameLength)) = $propertyValue"
+    }
+
+    return "$className{`r`n$($lines -join "`r`n")`r`n$closingIndent}"
+}
+
+<#
+.SYNOPSIS
+    Converts an array of instances of a class based DSC complex type to its DSC
+    representation.
+
+.PARAMETER Value
+    The array of class instances to convert.
+
+.PARAMETER Indent
+    Number of spaces each instance in the array is indented by.
+
+.PARAMETER NoEscape
+    If true, string properties will not be escaped.
+
+.PARAMETER AllowVariables
+    If true, PowerShell variables in strings are preserved.
+#>
+function ConvertTo-DSCClassInstanceArrayValue
+{
+    [CmdletBinding()]
+    [OutputType([System.String])]
+    param(
+        [Parameter()]
+        [System.Object[]]
+        $Value,
+
+        [Parameter()]
+        [System.Int32]
+        $Indent = 12,
+
+        [Parameter()]
+        [System.Boolean]
+        $NoEscape = $false,
+
+        [Parameter()]
+        [System.Boolean]
+        $AllowVariables = $false
+    )
+
+    if ($null -eq $Value -or $Value.Count -eq 0)
+    {
+        return "@()"
+    }
+
+    # Nulls have no representation and would be rendered as an empty block.
+    $instances = foreach ($instance in $Value)
+    {
+        if ($null -ne $instance)
+        {
+            ConvertTo-DSCClassInstanceValue -Value $instance -Indent ($Indent + 4) -NoEscape $NoEscape -AllowVariables $AllowVariables
+        }
+    }
+
+    if ($null -eq $instances)
+    {
+        return "@()"
+    }
+
+    $instanceIndent = ' ' * ($Indent + 4)
+    return "@(`r`n$instanceIndent$(@($instances) -join "`r`n$instanceIndent")`r`n$(' ' * $Indent))"
 }
 
 <#
@@ -634,7 +949,8 @@ function ConvertTo-DSCCimInstanceArrayValue
     Dispatches the value to the converter that matches its .NET type name.
     This is the single place where the mapping between the type of a value and
     its DSC representation is defined. It is used both for the properties of a
-    resource instance and for the properties of the CIM instances they contain.
+    resource instance and for the properties of the CIM instances and the class
+    based complex type instances they contain.
 
 .PARAMETER Value
     The value to convert.
@@ -678,6 +994,16 @@ function ConvertTo-DSCValue
         [System.Boolean]
         $AllowVariables = $false
     )
+
+    if (Test-IsDscClassInstanceArrayType -Value $Value)
+    {
+        return ConvertTo-DSCClassInstanceArrayValue -Value $Value -Indent $Indent -NoEscape $NoEscape -AllowVariables $AllowVariables
+    }
+
+    if (Test-IsDscClassInstanceType -Value $Value)
+    {
+        return ConvertTo-DSCClassInstanceValue -Value $Value -Indent $Indent -NoEscape $NoEscape -AllowVariables $AllowVariables
+    }
 
     switch -Regex ($Value.GetType().Name)
     {
@@ -736,10 +1062,10 @@ function ConvertTo-DSCValue
     parameters and returns the DSC string that represents the given instance
     of the specified resource.
 
-    CIM instances and arrays of CIM instances are rendered as MOF style blocks
-    that are already unquoted and unescaped. Only values that were passed in as
-    a pre-built string still need to be run through
-    Convert-DSCStringParamToVariable afterwards.
+    CIM instances, class based complex type instances and arrays of either are
+    rendered as MOF style blocks that are already unquoted and unescaped. Only
+    values that were passed in as a pre-built string still need to be run
+    through Convert-DSCStringParamToVariable afterwards.
 
 .PARAMETER ModulePath
     Full file path to the .psm1 module we are looking to get an instance of.
@@ -1104,6 +1430,10 @@ function Test-Credentials
     in this parameter because to the function a CIMObject is nothing
     but a String object and will treat it as such. However it has escaped
     double quotes, which need to be handled properly.
+
+.NOTES
+    Class based complex types are rendered as unquoted and unescaped blocks as
+    well and must likewise not be passed through this function.
 #>
 function Convert-DSCStringParamToVariable
 {
