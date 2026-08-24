@@ -1,3 +1,83 @@
+class MSFT_TestClassMember
+{
+    [DscProperty()]
+    [System.String] $DisplayName
+
+    [DscProperty()]
+    [System.String] $Role
+}
+
+class MSFT_TestClassEmpty
+{
+}
+
+class MSFT_TestClassSetting
+{
+    [DscProperty()]
+    [System.String] $Name
+
+    [DscProperty()]
+    [System.Nullable[System.Boolean]] $Enabled
+
+    [DscProperty()]
+    [System.Int32[]] $Ports
+
+    [DscProperty()]
+    [System.String[]] $Tags
+
+    [DscProperty()]
+    [System.Nullable[System.Int32]] $Missing
+}
+
+class MSFT_TestClassTeam
+{
+    [DscProperty()]
+    [System.String] $DisplayName
+
+    [DscProperty()]
+    [MSFT_TestClassMember] $Owner
+
+    [DscProperty()]
+    [MSFT_TestClassMember[]] $Members
+}
+
+# The name has to contain "int" to hit the 'Int.*\[\]' case of ConvertTo-DSCValue.
+class MSFT_TestClassIntuneAssignment
+{
+    [DscProperty()]
+    [System.String] $GroupId
+}
+
+class MSFT_TestClassEnumHolder
+{
+    [DscProperty()]
+    [System.Nullable[System.ConsoleColor]] $Color
+}
+
+# Every public property is rendered, not just the DSC ones.
+class MSFT_TestClassExtras
+{
+    [DscProperty()]
+    [System.String] $Name
+
+    [System.String] $Filter
+
+    hidden [System.String] $Secret
+}
+
+# Recognized by the [DscProperty()] attribute alone, without the MSFT_ prefix.
+class TestClassWithDscProperty
+{
+    [DscProperty()]
+    [System.String] $Name
+}
+
+# Neither the prefix nor the attribute, so this is not a complex type.
+class TestClassPlain
+{
+    [System.String] $Name
+}
+
 $modulePath = Join-Path -Path $PSScriptRoot -ChildPath '..\ReverseDSC.Core.psm1'
 Import-Module -Name $modulePath -Force
 
@@ -426,6 +506,113 @@ InModuleScope 'ReverseDSC.Core' {
                 $result = ConvertTo-DSCObjectArrayValue -Value @(1, 2)
                 $result | Should -Be '@(12)'
             }
+        }
+    }
+
+    Describe 'Test-IsDscClassInstanceType' {
+        It 'Should recognize an instance of a class with the MSFT_ prefix' {
+            Test-IsDscClassInstanceType -Value ([MSFT_TestClassMember]::new()) | Should -BeTrue
+        }
+
+        It 'Should recognize an instance of a class with a DSC property but no prefix' {
+            Test-IsDscClassInstanceType -Value ([TestClassWithDscProperty]::new()) | Should -BeTrue
+        }
+
+        It 'Should not recognize <Case>' -ForEach @(
+            @{ Case = 'a null value'; Value = $null }
+            @{ Case = 'a string'; Value = 'MSFT_NotAClass' }
+            @{ Case = 'a hashtable'; Value = @{ Key = 'Value' } }
+            @{ Case = 'an array list'; Value = [System.Collections.ArrayList]@('a') }
+            @{ Case = 'an enum'; Value = [System.ConsoleColor]::Red }
+            @{ Case = 'a PSCustomObject'; Value = [PSCustomObject] @{ Name = 'Test' } }
+            @{ Case = 'a class without prefix or DSC property'; Value = [TestClassPlain]::new() }
+            @{ Case = 'an array of class instances'; Value = [MSFT_TestClassMember[]]@([MSFT_TestClassMember]::new()) }
+        ) {
+            Test-IsDscClassInstanceType -Value $Value | Should -BeFalse
+        }
+
+        It 'Should not recognize a CIM instance' {
+            $instance = [Microsoft.Management.Infrastructure.CimInstance]::new('MSFT_TeamMember', 'root/microsoft/windows/desiredstateconfiguration')
+            Test-IsDscClassInstanceType -Value $instance | Should -BeFalse
+        }
+    }
+
+    Describe 'Test-IsDscClassInstanceArrayType' {
+        It 'Should recognize a strongly typed array of class instances' {
+            Test-IsDscClassInstanceArrayType -Value ([MSFT_TestClassMember[]]@([MSFT_TestClassMember]::new())) | Should -BeTrue
+        }
+
+        It 'Should recognize an empty strongly typed array' {
+            Test-IsDscClassInstanceArrayType -Value ([MSFT_TestClassMember[]]@()) | Should -BeTrue
+        }
+
+        It 'Should recognize an object array that holds class instances' {
+            Test-IsDscClassInstanceArrayType -Value @([MSFT_TestClassMember]::new()) | Should -BeTrue
+        }
+
+        It 'Should skip the leading null elements of an object array' {
+            Test-IsDscClassInstanceArrayType -Value @($null, [MSFT_TestClassMember]::new()) | Should -BeTrue
+        }
+
+        It 'Should not recognize <Case>' -ForEach @(
+            @{ Case = 'a null value'; Value = $null }
+            @{ Case = 'an empty object array'; Value = @() }
+            @{ Case = 'an object array of nulls'; Value = @($null, $null) }
+            @{ Case = 'a string array'; Value = [System.String[]]@('a', 'b') }
+            @{ Case = 'an integer array'; Value = [System.Int32[]]@(1, 2) }
+            @{ Case = 'an array list'; Value = [System.Collections.ArrayList]@('a') }
+            @{ Case = 'a single class instance'; Value = [MSFT_TestClassMember]::new() }
+        ) {
+            Test-IsDscClassInstanceArrayType -Value $Value | Should -BeFalse
+        }
+
+        It 'Should not recognize an array of CIM instances' {
+            $instance = [Microsoft.Management.Infrastructure.CimInstance]::new('MSFT_TeamMember', 'root/microsoft/windows/desiredstateconfiguration')
+            Test-IsDscClassInstanceArrayType -Value ([Microsoft.Management.Infrastructure.CimInstance[]]@($instance)) | Should -BeFalse
+        }
+    }
+
+    Describe 'Get-DSCClassInstanceProperty' {
+        It 'Should skip the properties that were never set' {
+            $instance = [MSFT_TestClassMember]::new()
+            $instance.DisplayName = 'John Doe'
+
+            $properties = @(Get-DSCClassInstanceProperty -Value $instance)
+            $properties.Count | Should -Be 1
+            $properties[0].Name | Should -Be 'DisplayName'
+        }
+
+        It 'Should return the properties sorted by name' {
+            $instance = [MSFT_TestClassSetting]::new()
+            $instance.Name = 'Test'
+            $instance.Enabled = $true
+            $instance.Tags = [System.String[]]@('a')
+            $instance.Ports = [System.Int32[]]@(80)
+
+            $properties = @(Get-DSCClassInstanceProperty -Value $instance)
+            $properties.Name | Should -Be @('Enabled', 'Name', 'Ports', 'Tags')
+        }
+
+        It 'Should return an empty result for a class without properties' {
+            @(Get-DSCClassInstanceProperty -Value ([MSFT_TestClassEmpty]::new())).Count | Should -Be 0
+        }
+
+        It 'Should return the value of a nullable property unwrapped' {
+            $instance = [MSFT_TestClassSetting]::new()
+            $instance.Enabled = $true
+
+            $properties = @(Get-DSCClassInstanceProperty -Value $instance)
+            $properties[0].Value.GetType().Name | Should -Be 'Boolean'
+        }
+
+        It 'Should return every public property of the instance' {
+            $instance = [MSFT_TestClassExtras]::new()
+            $instance.Name = 'Test'
+            $instance.Filter = 'ExportOnly'
+            $instance.Secret = 'Hidden'
+
+            $properties = @(Get-DSCClassInstanceProperty -Value $instance)
+            $properties.Name | Should -Be @('Filter', 'Name', 'Secret')
         }
     }
 
@@ -976,6 +1163,11 @@ function Set-TargetResource
                 $result | Should -Match '= \$Credssvc_admin;'
             }
 
+            It 'Should format a PSCustomObject the way it always did' {
+                $result = Get-DSCBlock -ModulePath $testModulePath -Params @{ Extra = [PSCustomObject] @{ Z = 1 } }
+                $result | Should -Match '= @\{Z=1\};'
+            }
+
         }
 
         Context 'When aligning the generated parameters' {
@@ -1307,14 +1499,16 @@ Describe 'Rendering CIM instances' {
 
         It 'Should separate the instances by a line break instead of a comma' {
             $expected = @(
-                '@(MSFT_TeamMember{'
-                '                DisplayName = "John Doe"'
-                '                Role        = "Owner"'
-                '            }'
-                '            MSFT_TeamMember{'
-                '                DisplayName = "Jane Roe"'
-                '                Role        = "Member"'
-                '            })'
+                '@('
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "Jane Roe"'
+                '                    Role        = "Member"'
+                '                }'
+                '            )'
             ) -join "`r`n"
 
             ConvertTo-DSCCimInstanceArrayValue -Value @($john, $jane) | Should -Be $expected
@@ -1325,14 +1519,16 @@ Describe 'Rendering CIM instances' {
         It 'Should render an array of instances inside the DSC block' {
             $expected = @(
                 '            DisplayName          = "Contoso Team";'
-                '            Members              = @(MSFT_TeamMember{'
-                '                DisplayName = "John Doe"'
-                '                Role        = "Owner"'
-                '            }'
-                '            MSFT_TeamMember{'
-                '                DisplayName = "Jane Roe"'
-                '                Role        = "Member"'
-                '            });'
+                '            Members              = @('
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "Jane Roe"'
+                '                    Role        = "Member"'
+                '                }'
+                '            );'
                 ''
             ) -join "`r`n"
 
@@ -1353,6 +1549,270 @@ Describe 'Rendering CIM instances' {
             ) -join "`r`n"
 
             Get-DSCBlock -ModulePath 'MSFT_ContosoTeam.psm1' -Params @{ Owner = $john } | Should -Be $expected
+        }
+    }
+}
+
+Describe 'Rendering class instances' {
+    BeforeAll {
+        $john = [MSFT_TestClassMember]::new()
+        $john.DisplayName = 'John Doe'
+        $john.Role = 'Owner'
+
+        $jane = [MSFT_TestClassMember]::new()
+        $jane.DisplayName = 'Jane Roe'
+        $jane.Role = 'Member'
+    }
+
+    Context 'When converting a single instance' {
+        It 'Should render a MOF style block with the properties aligned' {
+            $expected = @(
+                'MSFT_TestClassMember{'
+                '                DisplayName = "John Doe"'
+                '                Role        = "Owner"'
+                '            }'
+            ) -join "`r`n"
+
+            ConvertTo-DSCClassInstanceValue -Value $john | Should -Be $expected
+        }
+
+        It 'Should render an empty block when the class has no properties' {
+            ConvertTo-DSCClassInstanceValue -Value ([MSFT_TestClassEmpty]::new()) | Should -Be "MSFT_TestClassEmpty{`r`n            }"
+        }
+
+        It 'Should render an empty block when no property was set' {
+            ConvertTo-DSCClassInstanceValue -Value ([MSFT_TestClassMember]::new()) | Should -Be "MSFT_TestClassMember{`r`n            }"
+        }
+
+        It 'Should skip the properties that have no value' {
+            $instance = [MSFT_TestClassSetting]::new()
+            $instance.Name = 'Present'
+
+            ConvertTo-DSCClassInstanceValue -Value $instance | Should -Be "MSFT_TestClassSetting{`r`n                Name = `"Present`"`r`n            }"
+        }
+
+        It 'Should render the properties in alphabetical order' {
+            $instance = [MSFT_TestClassSetting]::new()
+            $instance.Name = 'Costs $100 and "quotes"'
+            $instance.Enabled = $true
+            $instance.Ports = [System.Int32[]]@(80, 443)
+            $instance.Tags = [System.String[]]@('a', 'b')
+
+            $expected = @(
+                'MSFT_TestClassSetting{'
+                '                Enabled = $True'
+                '                Name    = "Costs `$100 and `"quotes`""'
+                '                Ports   = @(80,443)'
+                '                Tags    = @("a","b")'
+                '            }'
+            ) -join "`r`n"
+
+            ConvertTo-DSCClassInstanceValue -Value $instance | Should -Be $expected
+        }
+
+        It 'Should render every public property of the instance' {
+            $instance = [MSFT_TestClassExtras]::new()
+            $instance.Name = 'Test'
+            $instance.Filter = 'ExportOnly'
+            $instance.Secret = 'Hidden'
+
+            $expected = @(
+                'MSFT_TestClassExtras{'
+                '                Filter = "ExportOnly"'
+                '                Name   = "Test"'
+                '                Secret = "Hidden"'
+                '            }'
+            ) -join "`r`n"
+
+            ConvertTo-DSCClassInstanceValue -Value $instance | Should -Be $expected
+        }
+
+        It 'Should render a nullable enum property as a quoted string' {
+            $instance = [MSFT_TestClassEnumHolder]::new()
+            $instance.Color = [System.ConsoleColor]::Red
+
+            ConvertTo-DSCClassInstanceValue -Value $instance | Should -Be "MSFT_TestClassEnumHolder{`r`n                Color = `"Red`"`r`n            }"
+        }
+
+        It 'Should indent a nested instance relative to its parent' {
+            $team = [MSFT_TestClassTeam]::new()
+            $team.DisplayName = 'Contoso'
+            $team.Owner = $john
+
+            $expected = @(
+                'MSFT_TestClassTeam{'
+                '                DisplayName = "Contoso"'
+                '                Owner       = MSFT_TestClassMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '            }'
+            ) -join "`r`n"
+
+            ConvertTo-DSCClassInstanceValue -Value $team | Should -Be $expected
+        }
+
+        It 'Should indent a nested array of instances relative to its parent' {
+            $team = [MSFT_TestClassTeam]::new()
+            $team.DisplayName = 'Contoso'
+            $team.Members = [MSFT_TestClassMember[]]@($john, $jane)
+
+            $expected = @(
+                'MSFT_TestClassTeam{'
+                '                DisplayName = "Contoso"'
+                '                Members     = @('
+                '                    MSFT_TestClassMember{'
+                '                        DisplayName = "John Doe"'
+                '                        Role        = "Owner"'
+                '                    }'
+                '                    MSFT_TestClassMember{'
+                '                        DisplayName = "Jane Roe"'
+                '                        Role        = "Member"'
+                '                    }'
+                '                )'
+                '            }'
+            ) -join "`r`n"
+
+            ConvertTo-DSCClassInstanceValue -Value $team | Should -Be $expected
+        }
+    }
+
+    Context 'When converting an array of instances' {
+        It 'Should return @() for <Case>' -ForEach @(
+            @{ Case = 'a null value'; Value = $null }
+            @{ Case = 'an empty array'; Value = @() }
+            @{ Case = 'an array with a single null element'; Value = @($null) }
+        ) {
+            ConvertTo-DSCClassInstanceArrayValue -Value $Value | Should -Be '@()'
+        }
+
+        It 'Should separate the instances by a line break instead of a comma' {
+            $expected = @(
+                '@('
+                '                MSFT_TestClassMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '                MSFT_TestClassMember{'
+                '                    DisplayName = "Jane Roe"'
+                '                    Role        = "Member"'
+                '                }'
+                '            )'
+            ) -join "`r`n"
+
+            ConvertTo-DSCClassInstanceArrayValue -Value @($john, $jane) | Should -Be $expected
+        }
+
+        It 'Should skip the null elements of the array' {
+            $expected = @(
+                '@('
+                '                MSFT_TestClassMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '            )'
+            ) -join "`r`n"
+
+            ConvertTo-DSCClassInstanceArrayValue -Value @($john, $null) | Should -Be $expected
+        }
+    }
+
+    Context 'When the instances are a property of a resource' {
+        It 'Should render a single instance inside the DSC block' {
+            $expected = @(
+                '            Owner                = MSFT_TestClassMember{'
+                '                DisplayName = "John Doe"'
+                '                Role        = "Owner"'
+                '            };'
+                ''
+            ) -join "`r`n"
+
+            Get-DSCBlock -ModulePath 'ContosoTeam.psm1' -Params @{ Owner = $john } | Should -Be $expected
+        }
+
+        It 'Should render a strongly typed array of instances inside the DSC block' {
+            $expected = @(
+                '            Members              = @('
+                '                MSFT_TestClassMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '                MSFT_TestClassMember{'
+                '                    DisplayName = "Jane Roe"'
+                '                    Role        = "Member"'
+                '                }'
+                '            );'
+                ''
+            ) -join "`r`n"
+
+            Get-DSCBlock -ModulePath 'ContosoTeam.psm1' -Params @{ Members = [MSFT_TestClassMember[]]@($john, $jane) } | Should -Be $expected
+        }
+
+        It 'Should render an object array of instances the same way as a strongly typed one' {
+            $typed = Get-DSCBlock -ModulePath 'ContosoTeam.psm1' -Params @{ Members = [MSFT_TestClassMember[]]@($john, $jane) }
+            $loose = Get-DSCBlock -ModulePath 'ContosoTeam.psm1' -Params @{ Members = @($john, $jane) }
+
+            $loose | Should -Be $typed
+        }
+
+        It 'Should render an empty array of instances as an empty array' {
+            Get-DSCBlock -ModulePath 'ContosoTeam.psm1' -Params @{ Members = [MSFT_TestClassMember[]]@() } | Should -Be "            Members              = @();`r`n"
+        }
+
+        It 'Should not treat an array of a class whose name contains Int as an integer array' {
+            $assignment = [MSFT_TestClassIntuneAssignment]::new()
+            $assignment.GroupId = '12345'
+
+            $expected = @(
+                '            Assignments          = @('
+                '                MSFT_TestClassIntuneAssignment{'
+                '                    GroupId = "12345"'
+                '                }'
+                '            );'
+                ''
+            ) -join "`r`n"
+
+            Get-DSCBlock -ModulePath 'IntuneThing.psm1' -Params @{ Assignments = [MSFT_TestClassIntuneAssignment[]]@($assignment) } | Should -Be $expected
+        }
+
+        It 'Should render a graph that nests instances into arrays of instances' {
+            $team = [MSFT_TestClassTeam]::new()
+            $team.DisplayName = 'Contoso'
+            $team.Owner = $john
+            $team.Members = [MSFT_TestClassMember[]]@($jane)
+
+            $result = Get-DSCBlock -ModulePath 'ContosoTeam.psm1' -Params @{ Teams = [MSFT_TestClassTeam[]]@($team) }
+            $result | Should -Match '                            DisplayName = "Jane Roe"'
+            $result | Should -Not -Match 'MSFT_TestClassTeam\s*;'
+        }
+
+        It 'Should produce a DSC block that can be parsed' {
+            $team = [MSFT_TestClassTeam]::new()
+            $team.DisplayName = 'Contoso'
+            $team.Members = [MSFT_TestClassMember[]]@($john, $jane)
+
+            $dscBlock = Get-DSCBlock -ModulePath 'ContosoTeam.psm1' -Params @{ DisplayName = 'Contoso Team' }
+
+            $tokens = $null
+            $parseErrors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseInput("@{`r`n$dscBlock}", [ref] $tokens, [ref] $parseErrors)
+            $parseErrors | Should -BeNullOrEmpty
+        }
+
+        It 'Should honour NoEscape for the strings of a class instance' {
+            $instance = [MSFT_TestClassMember]::new()
+            $instance.DisplayName = '$ConfigName'
+
+            $result = Get-DSCBlock -ModulePath 'ContosoTeam.psm1' -Params @{ Owner = $instance } -NoEscape @('Owner')
+            $result | Should -Match 'DisplayName = \$ConfigName'
+        }
+
+        It 'Should honour AllowVariablesInStrings for the strings of a class instance' {
+            $instance = [MSFT_TestClassMember]::new()
+            $instance.DisplayName = 'Value of $Node'
+
+            $result = Get-DSCBlock -ModulePath 'ContosoTeam.psm1' -Params @{ Owner = $instance } -AllowVariablesInStrings
+            $result | Should -Match 'DisplayName = "Value of \$Node"'
         }
     }
 }
@@ -1505,14 +1965,16 @@ function Set-TargetResource
     Context 'When the resource returns an array of CIM instances' {
         BeforeAll {
             $membersAsString = @(
-                '@(MSFT_TeamMember{'
-                '                DisplayName = "John Doe"'
-                '                Role        = "Owner"'
-                '            }'
-                '            MSFT_TeamMember{'
-                '                DisplayName = "Jane Roe"'
-                '                Role        = "Member"'
-                '            })'
+                '@('
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "Jane Roe"'
+                '                    Role        = "Member"'
+                '                }'
+                '            )'
             ) -join "`r`n"
 
             $results = @{
@@ -1527,14 +1989,16 @@ function Set-TargetResource
         It 'Should emit the CIM instances unquoted and unescaped' {
             $expected = @(
                 '            DisplayName          = "Contoso Team";'
-                '            Members              = @(MSFT_TeamMember{'
-                '                DisplayName = "John Doe"'
-                '                Role        = "Owner"'
-                '            }'
-                '            MSFT_TeamMember{'
-                '                DisplayName = "Jane Roe"'
-                '                Role        = "Member"'
-                '            });'
+                '            Members              = @('
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "Jane Roe"'
+                '                    Role        = "Member"'
+                '                }'
+                '            );'
                 ''
             ) -join "`r`n"
 
@@ -1562,14 +2026,16 @@ function Set-TargetResource
         It 'Should produce the same DSC block as the pre-built string does' {
             $expected = @(
                 '            DisplayName          = "Contoso Team";'
-                '            Members              = @(MSFT_TeamMember{'
-                '                DisplayName = "John Doe"'
-                '                Role        = "Owner"'
-                '            }'
-                '            MSFT_TeamMember{'
-                '                DisplayName = "Jane Roe"'
-                '                Role        = "Member"'
-                '            });'
+                '            Members              = @('
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "John Doe"'
+                '                    Role        = "Owner"'
+                '                }'
+                '                MSFT_TeamMember{'
+                '                    DisplayName = "Jane Roe"'
+                '                    Role        = "Member"'
+                '                }'
+                '            );'
                 ''
             ) -join "`r`n"
 
