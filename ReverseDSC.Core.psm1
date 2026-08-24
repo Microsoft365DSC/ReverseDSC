@@ -758,12 +758,13 @@ function Test-IsDscClassInstanceArrayType
 
 <#
 .SYNOPSIS
-    Returns the properties of a class instance that have a value.
+    Returns the DSC properties of a class instance that have a value.
 
 .DESCRIPTION
-    A class materializes every property it declares, so the ones that were never
-    set come back as null and are skipped. The remaining ones are returned sorted
-    by name.
+    Only properties that carry the DscProperty attribute are returned, as the
+    other ones are not part of the DSC schema. A class materializes every
+    property it declares, so the ones that were never set come back as null and
+    are skipped. The remaining ones are returned sorted by name.
 
     A property of a non nullable value type materializes to its zero value and
     can therefore not be told apart from one that was set to it. Complex types
@@ -786,6 +787,11 @@ function Get-DSCClassInstanceProperty
     $bindingFlags = [System.Reflection.BindingFlags]'Public, Instance'
     foreach ($property in $Value.GetType().GetProperties($bindingFlags) | Sort-Object -Property Name)
     {
+        if (@($property.GetCustomAttributes([System.Management.Automation.DscPropertyAttribute], $true)).Count -eq 0)
+        {
+            continue
+        }
+
         $propertyValue = $property.GetValue($Value)
         if ($null -eq $propertyValue)
         {
@@ -808,7 +814,7 @@ function Get-DSCClassInstanceProperty
 
 .DESCRIPTION
     Renders the class instance as the MOF style block that DSC configurations
-    expect, listing every property of the instance that has a value. The
+    expect, listing every DSC property of the instance that has a value. The
     resulting string is already unquoted and unescaped, and should therefore
     not be passed through Convert-DSCStringParamToVariable.
 
