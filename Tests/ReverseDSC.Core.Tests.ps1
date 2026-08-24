@@ -54,7 +54,7 @@ class MSFT_TestClassEnumHolder
     [System.Nullable[System.ConsoleColor]] $Color
 }
 
-# Every public property is rendered, not just the DSC ones.
+# Only the DSC properties are rendered.
 class MSFT_TestClassExtras
 {
     [DscProperty()]
@@ -605,14 +605,14 @@ InModuleScope 'ReverseDSC.Core' {
             $properties[0].Value.GetType().Name | Should -Be 'Boolean'
         }
 
-        It 'Should return every public property of the instance' {
+        It 'Should skip the properties that are not DSC properties' {
             $instance = [MSFT_TestClassExtras]::new()
             $instance.Name = 'Test'
             $instance.Filter = 'ExportOnly'
             $instance.Secret = 'Hidden'
 
             $properties = @(Get-DSCClassInstanceProperty -Value $instance)
-            $properties.Name | Should -Be @('Filter', 'Name', 'Secret')
+            $properties.Name | Should -Be @('Name')
         }
     }
 
@@ -1610,21 +1610,13 @@ Describe 'Rendering class instances' {
             ConvertTo-DSCClassInstanceValue -Value $instance | Should -Be $expected
         }
 
-        It 'Should render every public property of the instance' {
+        It 'Should render only the DSC properties of the instance' {
             $instance = [MSFT_TestClassExtras]::new()
             $instance.Name = 'Test'
             $instance.Filter = 'ExportOnly'
             $instance.Secret = 'Hidden'
 
-            $expected = @(
-                'MSFT_TestClassExtras{'
-                '                Filter = "ExportOnly"'
-                '                Name   = "Test"'
-                '                Secret = "Hidden"'
-                '            }'
-            ) -join "`r`n"
-
-            ConvertTo-DSCClassInstanceValue -Value $instance | Should -Be $expected
+            ConvertTo-DSCClassInstanceValue -Value $instance | Should -Be "MSFT_TestClassExtras{`r`n                Name = `"Test`"`r`n            }"
         }
 
         It 'Should render a nullable enum property as a quoted string' {
