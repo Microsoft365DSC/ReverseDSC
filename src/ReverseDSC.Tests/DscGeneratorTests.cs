@@ -169,8 +169,23 @@ public class DscGeneratorTests : IDisposable
     [Fact]
     public void CachesTheSetTargetResourceParameters()
     {
-        DscParamTypeResolver.Resolve(_state, _modulePath, "$StringParam");
+        Assert.Equal("System.String", DscParamTypeResolver.Resolve(_state, _modulePath, "$StringParam"));
         Assert.True(_state.SetTargetResourceParameters.ContainsKey(_modulePath));
+        Assert.Equal("System.String", DscParamTypeResolver.Resolve(_state, _modulePath, "$StringParam"));
+    }
+
+    [Fact]
+    public void LeavesACimBlockAloneWhenTheParameterIsAbsent()
+    {
+        string block = "            Other = \"Value\";\r\n";
+        Assert.Equal(block, DscStringParamConverter.Convert(block, "Members", true, false));
+    }
+
+    [Fact]
+    public void LeavesACimBlockAloneWhenTheParameterHasNoTerminatingLineBreak()
+    {
+        string block = "            Members = @(MSFT_TeamMember{ Name = 'x' })";
+        Assert.Equal(block, DscStringParamConverter.Convert(block, "Members", true, false));
     }
 
     [Fact]

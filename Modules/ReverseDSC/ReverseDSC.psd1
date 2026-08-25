@@ -7,7 +7,7 @@
 #
 @{
     RootModule             = 'ReverseDSC.dll'
-    ModuleVersion          = '3.0.0'
+    ModuleVersion          = '3.0.0.0'
     GUID                   = '6c1176a0-4fac-4134-8ca2-3fa8a21a7b90'
     Author                 = 'Microsoft Corporation'
     CompanyName            = 'Microsoft Corporation'
