@@ -19,53 +19,55 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
 
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Install Modules
         shell: pwsh
         run: |
           Install-PSResource -Name Pester -Scope AllUsers -TrustRepository
 
-      - name: Run Pester Tests
+      - name: Run Tests
         shell: pwsh
         run: |
           Import-Module './Tests/TestHarness.psm1' -Force;
 
-          try
-          {
-              $results = Invoke-TestHarness
-          }
-          catch
-          {
-              Import-Module './Tests/TestHarness.psm1' -Force;
-              $results = Invoke-TestHarness
-          }
+          $results = Invoke-TestHarness -Configuration Release
 
           Write-TestHarnessSummary -Result $results -Path $env:GITHUB_STEP_SUMMARY
 
           if ($results.FailedCount -gt 0)
           {
-              throw "{$($results.FailedCount)} Unit Test(s) Failed"
+              throw "{$($results.FailedCount)} Pester Test(s) Failed"
           }
 
-      - name: Upload Code Coverage Report
+          if ($results.CSharpResult.ExitCode -ne 0)
+          {
+              throw "The C# test suite failed with exit code $($results.CSharpResult.ExitCode)"
+          }
+
+      - name: Upload Test Results
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: code-coverage
-          path: CodeCov.xml
+          name: test-results
+          path: TestResults
           if-no-files-found: warn
 
       - name: Validate Module Manifest
         shell: pwsh
         run: |
-          Test-ModuleManifest -Path ./ReverseDSC.psd1
+          Test-ModuleManifest -Path ./ReverseDSC/ReverseDSC.psd1
 
       - name: Validate Module Import
         shell: pwsh
         run: |
-          Import-Module ./ReverseDSC.psd1 -Force -ErrorAction Stop
-          $exportedFunctions = (Get-Module ReverseDSC).ExportedFunctions.Keys
-          if ($exportedFunctions.Count -eq 0)
+          Import-Module ./ReverseDSC/ReverseDSC.psd1 -Force -ErrorAction Stop
+          $exportedCmdlets = (Get-Module ReverseDSC).ExportedCmdlets.Keys
+          if ($exportedCmdlets.Count -eq 0)
           {
-              throw "No functions exported from the ReverseDSC module."
+              throw "No cmdlets exported from the ReverseDSC module."
           }
-          Write-Host "Exported functions: $($exportedFunctions -join ', ')"
+          Write-Host "Exported cmdlets: $($exportedCmdlets -join ', ')"

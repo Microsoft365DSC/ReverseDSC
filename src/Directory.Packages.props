@@ -1,0 +1,20 @@
+<Project>
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Management.Infrastructure" Version="3.0.0" />
+    <PackageVersion Include="PowerShellStandard.Library" Version="5.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.9.0" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport" Version="2.3.3" />
+    <!-- Real PowerShell engine for tests. PowerShellStandard.Library is a reference-only facade whose types are not implemented. -->
+    <PackageVersion Include="System.Management.Automation" Version="7.6.4" />
+    <PackageVersion Include="xunit.v3.mtp-v2" Version="3.2.2" />
+  </ItemGroup>
+
+</Project>
