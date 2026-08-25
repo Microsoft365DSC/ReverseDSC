@@ -8,7 +8,7 @@
 *.user
 *.userosscache
 *.sln.docstates
-ReverseDSC/
+/ReverseDSC/
 testResults.xml
 
 # User-specific files (MonoDevelop/Xamarin Studio)
@@ -291,3 +291,6 @@ __pycache__/
 
 # Code Coverage report
 CodeCov.xml
+
+# ReverseDSC staged module output
+/TestResults/
