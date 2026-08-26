@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <AssemblyName>ReverseDSC</AssemblyName>
+    <RootNamespace>ReverseDSC</RootNamespace>
+    <Description>Extracts the DSC configuration of existing environments.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ReverseDSC.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Management.Infrastructure" PrivateAssets="All" />
+    <PackageReference Include="PowerShellStandard.Library" PrivateAssets="All" />
+  </ItemGroup>
+
+</Project>

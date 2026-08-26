@@ -16,13 +16,15 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
 
-      - name: Prepare ReverseDSC Module for Publishing
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build and Stage the ReverseDSC Module
         shell: pwsh
         run: |
-          # Copy the ReverseDSC module to the root of the repository for publishing
-          New-Item -Path "./ReverseDSC" -ItemType Directory -Force
-          Copy-Item -Path "./ReverseDSC.psd1" -Destination "./ReverseDSC" -Force
-          Copy-Item -Path "./ReverseDSC.Core.psm1" -Destination "./ReverseDSC" -Force
+          & ./Utilities/Build.ps1 -Configuration Release
 
       - name: Validate Module Manifest
         shell: pwsh

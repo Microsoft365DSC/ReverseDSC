@@ -1,3 +1,27 @@
+<#
+.SYNOPSIS
+    Builds ReverseDSC and runs both test suites.
+
+.DESCRIPTION
+    Builds the solution, stages the PowerShell module, runs the xUnit suite that covers the engine
+    and then the Pester suite that covers the exported cmdlets. Returns the Pester result object
+    with the xUnit counts attached, so a caller can decide what to do with failures.
+
+.PARAMETER TestResultsFile
+    File the Pester results are written to, in NUnit format.
+
+.PARAMETER DscTestsPath
+    Single test file to run instead of everything under Tests.
+
+.PARAMETER Configuration
+    Build configuration to use.
+
+.PARAMETER SkipBuild
+    Runs the tests against whatever is already built and staged.
+
+.EXAMPLE
+    Invoke-TestHarness -Configuration Release
+#>
 function Invoke-TestHarness
 {
     [CmdletBinding()]
@@ -12,8 +36,13 @@ function Invoke-TestHarness
         $DscTestsPath,
 
         [Parameter()]
+        [ValidateSet('Debug', 'Release')]
+        [System.String]
+        $Configuration = 'Release',
+
+        [Parameter()]
         [Switch]
-        $IgnoreCodeCoverage
+        $SkipBuild
     )
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -21,58 +50,40 @@ function Invoke-TestHarness
     Write-Host -Object 'Running all ReverseDSC Unit Tests'
 
     $repoDir = Join-Path -Path $PSScriptRoot -ChildPath '..\' -Resolve
+    $resultsDir = Join-Path -Path $repoDir -ChildPath 'TestResults'
 
-    $oldModPath = $env:PSModulePath
-    $env:PSModulePath = $env:PSModulePath + [System.IO.Path]::PathSeparator + $ModuleDirectory
-
-    $testCoverageFiles = @()
-    if ($IgnoreCodeCoverage.IsPresent -eq $false)
+    if (-not $SkipBuild.IsPresent)
     {
-        $testsDir = Join-Path -Path $repoDir -ChildPath 'Tests'
-        Get-ChildItem -Path $repoDir -Include '*.psm1', '*.ps1' -Recurse |
-            Where-Object -FilterScript { -not $_.FullName.StartsWith($testsDir, [System.StringComparison]::OrdinalIgnoreCase) } |
-            ForEach-Object {
-                $testCoverageFiles += $_.FullName
-            }
+        & (Join-Path -Path $repoDir -ChildPath 'Utilities\Build.ps1') -Configuration $Configuration -SkipClean
     }
 
-    Import-Module -Name "$repoDir/ReverseDSC.psd1"
-    $testsToRun = @()
+    $unitTestResult = Invoke-CSharpTestSuite -RepositoryRoot $repoDir -Configuration $Configuration -ResultsDirectory $resultsDir -SkipBuild:$SkipBuild
 
-    # Run Unit Tests
-
-    # ReverseDSC Common Tests
-    $getChildItemParameters = @{
-        Path    = (Join-Path -Path $repoDir -ChildPath '\Tests')
-        Recurse = $true
-        Filter  = '*.Tests.ps1'
+    $modulePath = Join-Path -Path $repoDir -ChildPath 'ReverseDSC\ReverseDSC.psd1'
+    if (-not (Test-Path -Path $modulePath))
+    {
+        throw "The ReverseDSC module has not been staged at '$modulePath'. Run Utilities\Build.ps1 first."
     }
 
-    # Get all tests '*.Tests.ps1'.
-    $commonTestFiles = Get-ChildItem @getChildItemParameters
+    Import-Module -Name $modulePath -Force
 
-    $testsToRun += @( $commonTestFiles.FullName )
-
-    $filesToExecute = @()
-    if ($DscTestsPath -ne '')
+    if ([System.String]::IsNullOrEmpty($DscTestsPath))
     {
-        $filesToExecute += $DscTestsPath
+        $getChildItemParameters = @{
+            Path    = (Join-Path -Path $repoDir -ChildPath 'Tests')
+            Recurse = $true
+            Filter  = '*.Tests.ps1'
+        }
+        $filesToExecute = @((Get-ChildItem @getChildItemParameters).FullName)
     }
     else
     {
-        foreach ($testToRun in $testsToRun)
-        {
-            $filesToExecute += $testToRun
-        }
+        $filesToExecute = @($DscTestsPath)
     }
 
-    $Params = [ordered]@{
-        Path = $filesToExecute
-    }
+    $Container = New-PesterContainer -Path $filesToExecute
 
-    $Container = New-PesterContainer @Params
-
-    $Configuration = [PesterConfiguration]@{
+    $pesterConfiguration = [PesterConfiguration]@{
         Run    = @{
             Container = $Container
             PassThru  = $true
@@ -85,28 +96,19 @@ function Invoke-TestHarness
         }
     }
 
-    if ([String]::IsNullOrEmpty($TestResultsFile) -eq $false)
+    if ([System.String]::IsNullOrEmpty($TestResultsFile) -eq $false)
     {
-        $Configuration.Output.Enabled = $true
-        $Configuration.Output.OutputFormat = 'NUnitXml'
-        $Configuration.Output.OutputFile = $TestResultsFile
+        $pesterConfiguration.TestResult.Enabled = $true
+        $pesterConfiguration.TestResult.OutputFormat = 'NUnitXml'
+        $pesterConfiguration.TestResult.OutputPath = $TestResultsFile
     }
 
-    if ($IgnoreCodeCoverage.IsPresent -eq $false)
-    {
-        $Configuration.CodeCoverage.Enabled = $true
-        $Configuration.CodeCoverage.Path = $testCoverageFiles
-        $Configuration.CodeCoverage.OutputPath = 'CodeCov.xml'
-        $Configuration.CodeCoverage.OutputFormat = 'JaCoCo'
-        $Configuration.CodeCoverage.UseBreakpoints = $false
-    }
+    $results = Invoke-Pester -Configuration $pesterConfiguration
 
-    $results = Invoke-Pester -Configuration $Configuration
+    Add-Member -InputObject $results -MemberType NoteProperty -Name 'CSharpResult' -Value $unitTestResult -Force
 
     $message = 'Running the tests took {0} hours, {1} minutes, {2} seconds' -f $sw.Elapsed.Hours, $sw.Elapsed.Minutes, $sw.Elapsed.Seconds
     Write-Host -Object $message
-
-    $env:PSModulePath = $oldModPath
     Write-Host -Object 'Completed running all ReverseDSC Unit Tests'
 
     Write-TestHarnessSummary -Result $results
@@ -116,12 +118,93 @@ function Invoke-TestHarness
 
 <#
 .SYNOPSIS
+    Runs the xUnit suite that covers the engine.
+
+.DESCRIPTION
+    Runs the compiled test executable through the Microsoft Testing Platform, producing a trx
+    report and a Cobertura coverage report in the results directory. Returns an object holding the
+    exit code and the two report paths.
+
+.PARAMETER RepositoryRoot
+    Root of the repository.
+
+.PARAMETER Configuration
+    Build configuration the test project was built in.
+
+.PARAMETER ResultsDirectory
+    Directory the reports are written to.
+
+.PARAMETER SkipBuild
+    Runs the executable that is already built instead of building it first.
+
+.EXAMPLE
+    Invoke-CSharpTestSuite -RepositoryRoot 'D:\ReverseDSC' -Configuration Release -ResultsDirectory 'D:\ReverseDSC\TestResults'
+#>
+function Invoke-CSharpTestSuite
+{
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [System.String]
+        $RepositoryRoot,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Debug', 'Release')]
+        [System.String]
+        $Configuration,
+
+        [Parameter(Mandatory = $true)]
+        [System.String]
+        $ResultsDirectory,
+
+        [Parameter()]
+        [Switch]
+        $SkipBuild
+    )
+
+    $projectPath = Join-Path -Path $RepositoryRoot -ChildPath 'src\ReverseDSC.Tests\ReverseDSC.Tests.csproj'
+    if (-not $SkipBuild.IsPresent)
+    {
+        & dotnet build $projectPath -c $Configuration --nologo
+        if ($LASTEXITCODE -ne 0)
+        {
+            throw "Building the C# test project failed with exit code $LASTEXITCODE."
+        }
+    }
+
+    $executable = Join-Path -Path $RepositoryRoot -ChildPath "src\ReverseDSC.Tests\bin\$Configuration\net10.0\ReverseDSC.Tests.exe"
+    if (-not (Test-Path -Path $executable))
+    {
+        throw "The C# test executable was not found at '$executable'."
+    }
+
+    $arguments = @(
+        '--results-directory', $ResultsDirectory
+        '--report-trx', '--report-trx-filename', 'ReverseDSC.Tests.trx'
+        '--coverage', '--coverage-output-format', 'cobertura', '--coverage-output', 'coverage.cobertura.xml'
+    )
+
+    Write-Host -Object 'Running the C# unit tests'
+    & $executable @arguments
+    $exitCode = $LASTEXITCODE
+
+    return [PSCustomObject]@{
+        ExitCode     = $exitCode
+        TrxPath      = Join-Path -Path $ResultsDirectory -ChildPath 'ReverseDSC.Tests.trx'
+        CoveragePath = Join-Path -Path $ResultsDirectory -ChildPath 'coverage.cobertura.xml'
+    }
+}
+
+<#
+.SYNOPSIS
     Renders the results of Invoke-TestHarness as a report.
 
 .DESCRIPTION
-    Writes the test counts and the per file code coverage of the run. Without a path the report
-    goes to the console, with a path it is appended as GitHub flavoured markdown, which makes it
-    usable as a GitHub Actions step summary.
+    Writes the Pester test counts, the outcome of the C# suite and the line coverage of the
+    Cobertura report. Without a path the report goes to the console, with a path it is appended as
+    GitHub flavoured markdown, which makes it usable as a GitHub Actions step summary.
 
 .PARAMETER Result
     The object returned by Invoke-TestHarness.
@@ -151,55 +234,29 @@ function Write-TestHarnessSummary
 
     $lines.Add('## Unit Test Results')
     $lines.Add('')
-    $lines.Add('| Passed | Failed | Skipped |')
-    $lines.Add('| ---: | ---: | ---: |')
-    $lines.Add("| $($Result.PassedCount) | $($Result.FailedCount) | $($Result.SkippedCount) |")
+    $lines.Add('| Suite | Passed | Failed | Skipped |')
+    $lines.Add('| :--- | ---: | ---: | ---: |')
+    $lines.Add("| Pester | $($Result.PassedCount) | $($Result.FailedCount) | $($Result.SkippedCount) |")
+
+    $cSharpResult = $Result.CSharpResult
+    if ($null -ne $cSharpResult -and (Test-Path -Path $cSharpResult.TrxPath))
+    {
+        $trx = [xml](Get-Content -Path $cSharpResult.TrxPath -Raw)
+        $counters = $trx.TestRun.ResultSummary.Counters
+        $lines.Add("| xUnit | $($counters.passed) | $($counters.failed) | $([System.Int32]$counters.total - [System.Int32]$counters.executed) |")
+    }
+
     $lines.Add('')
 
-    $coverage = $Result.CodeCoverage
-    if ($null -ne $coverage)
+    if ($null -ne $cSharpResult -and (Test-Path -Path $cSharpResult.CoveragePath))
     {
+        $coverage = [xml](Get-Content -Path $cSharpResult.CoveragePath -Raw)
+        $lineRate = [System.Math]::Round([System.Double]$coverage.coverage.'line-rate' * 100, 2)
+        $branchRate = [System.Math]::Round([System.Double]$coverage.coverage.'branch-rate' * 100, 2)
+
         $lines.Add('## Code Coverage')
         $lines.Add('')
-        $lines.Add("**$([System.Math]::Round($coverage.CoveragePercent, 2))%** of $($coverage.CommandsAnalyzedCount) commands covered.")
-        $lines.Add('')
-        $lines.Add('| File | Covered | Missed |')
-        $lines.Add('| :--- | ---: | ---: |')
-
-        $perFile = @{}
-        foreach ($command in @($coverage.CommandsExecuted) + @($coverage.CommandsMissed))
-        {
-            if ($null -eq $command)
-            {
-                continue
-            }
-
-            if (-not $perFile.ContainsKey($command.File))
-            {
-                $perFile[$command.File] = @{ Analyzed = 0; Missed = 0 }
-            }
-
-            $perFile[$command.File].Analyzed++
-        }
-
-        foreach ($command in @($coverage.CommandsMissed))
-        {
-            if ($null -eq $command)
-            {
-                continue
-            }
-
-            $perFile[$command.File].Missed++
-        }
-
-        foreach ($file in ($perFile.Keys | Sort-Object))
-        {
-            $analyzed = $perFile[$file].Analyzed
-            $missed = $perFile[$file].Missed
-            $percentage = [System.Math]::Round(($analyzed - $missed) / $analyzed * 100, 2)
-            $lines.Add("| $(Split-Path -Path $file -Leaf) | $percentage% | $missed |")
-        }
-
+        $lines.Add("**$lineRate%** of the lines and **$branchRate%** of the branches are covered.")
         $lines.Add('')
     }
 
